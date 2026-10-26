@@ -1,6 +1,7 @@
 """Image/page recognition with preserved independent candidates and quality gates."""
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from importlib.metadata import version
 import json
@@ -13,15 +14,20 @@ from tempfile import TemporaryDirectory
 from tempfile import NamedTemporaryFile
 import os
 from time import perf_counter
+from threading import Lock
 
 from .parsers import parse_document
 from .providers import recognize_image
 from .contracts import RunPaused, StaleLease, canonical, digest
 
+RECOGNITION_CACHE_VERSION = "recognition-v4-page-evidence-compact"
+PROVIDER_CONTRACT_VERSION = "provider-candidate-contract-v2"
+
 
 def public_model_settings(settings):
     return {name: {key: section.get(key) for key in
-                   ("enabled", "provider", "url", "base_url", "model", "pdf_renderer", "max_pages",
+                   ("enabled", "provider", "url", "base_url", "model", "pdf_renderer", "pdf_render_dpi",
+                    "max_pages", "recognition_concurrency",
                     "timeout_seconds", "max_tokens", "max_output_tokens", "prompt", "quality_gate") if key in section}
             for name, section in settings.items() if name in {"ocr", "vision"} and isinstance(section, dict)}
 
@@ -78,9 +84,8 @@ def recognize_checked(image_bytes, mime_type, settings, *, transport=None, progr
         if cache_dir is not None:
             cache_key = digest({"image_hash": image_hash, "mime_type": mime_type, "provider": kind,
                                 "settings": public_model_settings({kind: selected[kind]}),
-                                "recognition_implementation": sha256(Path(__file__).read_bytes()).hexdigest(),
-                                "provider_implementation": sha256(Path(__file__).with_name("providers.py").read_bytes()).hexdigest(),
-                                "recognition_version": "recognition-cache-v2"})
+                                "recognition_version": RECOGNITION_CACHE_VERSION,
+                                "provider_contract_version": PROVIDER_CONTRACT_VERSION})
             cache_path = Path(cache_dir) / f"{cache_key}.json"
             try:
                 cached = _read_cache(cache_path)
@@ -225,10 +230,104 @@ def parse_with_models(path, *, file_id, settings, transport=None, progress_callb
     result["recognition_budget"] = {"eligible_pages": len(eligible), "attempted_pages": 0,
                                     "skipped_pages": 0, "max_pages": maximum}
     recognition_cache = {}
+    cache_lock = Lock()
     pdf_reader = None
     if result["format"] == "pdf":
         from pypdf import PdfReader
         pdf_reader = PdfReader(path, strict=True)
+    concurrency = settings.get("ocr", {}).get("recognition_concurrency", 1)
+    concurrency = concurrency if type(concurrency) is int and 1 <= concurrency <= 2 else 1
+
+    def recognize_unit(unit):
+        started = perf_counter()
+        page_number = int(unit["unit_id"].split(":")[1]) if unit["unit_id"].startswith("page:") else None
+        if progress_callback:
+            progress_callback({"stage": "recognition", "event": "page_started", "file_id": file_id,
+                               "page": page_number, "page_total": len(eligible), "status": "running", "issues": []})
+        fallback_issue = None
+        if result["format"] in image_formats:
+            images = [(path.read_bytes(), image_formats[result["format"]], {"image": 1})]
+        elif result["format"] == "pdf" and unit["unit_id"].startswith("page:"):
+            page = int(unit["unit_id"].split(":")[1])
+            try:
+                images = _pdf_image_candidates(path, page, pdf_reader if concurrency == 1 else None)
+            except Exception as exc:
+                if type(exc).__module__ == "PIL.Image" and type(exc).__name__ == "DecompressionBombError":
+                    images = []
+                    fallback_issue = "embedded_image_limit"
+                elif isinstance(exc, NotImplementedError):
+                    images = []
+                    fallback_issue = "embedded_image_extraction_unsupported"
+                else:
+                    raise
+            if not images:
+                images = [(_render_page(path, page, settings), "image/png",
+                           {"page": page, "source": "page_render_fallback"} if fallback_issue else {"page": page})]
+        else:
+            return None
+        all_compared, page_issues, observations, blocks = True, [], [], []
+        if fallback_issue:
+            page_issues.append(fallback_issue)
+        for image_bytes, mime_type, locator in images:
+            image_hash = sha256(image_bytes).hexdigest()
+            with cache_lock:
+                checked = recognition_cache.get(image_hash)
+            reused = checked is not None
+            if not reused:
+                checked = recognize_checked(image_bytes, mime_type, settings, transport=transport,
+                                            progress_callback=progress_callback, file_id=file_id,
+                                            page=locator.get("page"), cache_dir=cache_dir,
+                                            image_hash=image_hash)
+                with cache_lock:
+                    recognition_cache[image_hash] = checked
+            all_compared = all_compared and checked["readable"]
+            page_issues.extend(checked["issues"])
+            metadata = {"recognition_candidates": checked["candidates"], "recognition_quality_policy": checked["quality_policy"],
+                        "image_hash": image_hash, "recognition_issues": checked["issues"],
+                        "image_locator": locator, "recognition_cache_reused": reused}
+            observations.append(metadata)
+            for segment_index, block in enumerate(checked["checked_blocks"]):
+                blocks.append((locator, metadata, segment_index, block))
+        return {"page": page_number, "elapsed_ms": round((perf_counter() - started) * 1000),
+                "all_compared": all_compared, "issues": list(dict.fromkeys(page_issues)),
+                "observations": observations, "blocks": blocks}
+
+    def apply_result(unit, completed):
+        if completed is None:
+            return
+        for locator, metadata, segment_index, block in completed["blocks"]:
+            recognized_locator = dict(locator, recognized_block=segment_index + 1)
+            result["blocks"].append({"block_id": sha256((result["content_hash"] + json.dumps(recognized_locator, sort_keys=True) + "recognized-v2").encode()).hexdigest(),
+                                     "text": block["text"], "kind": "recognized_page", "locator": locator,
+                                     "metadata": {"recognition_quality": block["quality"],
+                                                  "recognition_source_refs": block["source_refs"],
+                                                  "image_hash": metadata["image_hash"],
+                                                  "image_locator": metadata["image_locator"],
+                                                  "recognized_block": segment_index + 1}})
+        unit["recognition"] = {"images": completed["observations"], "issues": completed["issues"],
+                               "status": "compared" if completed["all_compared"] else "incomplete"}
+        if completed["all_compared"] and unit["state"] == "unreadable":
+            unit.update(state="readable", reason="independent_blocks_compared_not_source_truth")
+        result["issues"].extend(unit["unit_id"] + ": " + issue for issue in completed["issues"])
+        if progress_callback:
+            progress_callback({"stage": "recognition", "event": "page_finished", "file_id": file_id,
+                               "page": completed["page"], "page_total": len(eligible),
+                               "elapsed_ms": completed["elapsed_ms"], "status": "candidate", "issues": completed["issues"]})
+
+    def apply_failure(unit, exc):
+        if isinstance(exc, (StaleLease, RunPaused)):
+            raise exc
+        pillow_limit = type(exc).__module__ == "PIL.Image" and type(exc).__name__ == "DecompressionBombError"
+        if not pillow_limit and not isinstance(exc, (OSError, ValueError, RuntimeError, subprocess.SubprocessError)):
+            raise exc
+        issue = "recognition_failed:" + type(exc).__name__
+        result["issues"].append(unit["unit_id"] + ": " + issue)
+        unit["recognition"] = {"status": "failed", "issues": [issue]}
+        if progress_callback:
+            progress_callback({"stage": "recognition", "event": "page_finished", "file_id": file_id,
+                               "page": int(unit["unit_id"].split(":")[1]) if unit["unit_id"].startswith("page:") else None,
+                               "page_total": len(eligible), "status": "failed", "issues": [issue]})
+
     for number, unit in enumerate(eligible):
         if number >= maximum:
             result["issues"].append(unit["unit_id"] + ": recognition_budget_exhausted")
@@ -240,84 +339,23 @@ def parse_with_models(path, *, file_id, settings, transport=None, progress_callb
                                    "page": int(unit["unit_id"].split(":")[1]) if unit["unit_id"].startswith("page:") else None,
                                    "page_total": len(eligible), "status": "skipped",
                                    "issues": ["recognition_budget_exhausted"]})
-            continue
-        result["recognition_budget"]["attempted_pages"] += 1
-        try:
-            started = perf_counter()
-            page_number = int(unit["unit_id"].split(":")[1]) if unit["unit_id"].startswith("page:") else None
-            if progress_callback:
-                progress_callback({"stage": "recognition", "event": "page_started", "file_id": file_id,
-                                   "page": page_number, "page_total": len(eligible), "status": "running", "issues": []})
-            fallback_issue = None
-            if result["format"] in image_formats:
-                images = [(path.read_bytes(), image_formats[result["format"]], {"image": 1})]
-            elif result["format"] == "pdf" and unit["unit_id"].startswith("page:"):
-                page = int(unit["unit_id"].split(":")[1])
+    attempted = eligible[:maximum]
+    result["recognition_budget"]["attempted_pages"] = len(attempted)
+    if concurrency == 1:
+        for unit in attempted:
+            try:
+                apply_result(unit, recognize_unit(unit))
+            except Exception as exc:
+                apply_failure(unit, exc)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="page-recognition") as pool:
+            futures = [pool.submit(recognize_unit, unit) for unit in attempted]
+            for unit, future in zip(attempted, futures):
                 try:
-                    images = _pdf_image_candidates(path, page, pdf_reader)
+                    apply_result(unit, future.result())
                 except Exception as exc:
-                    if type(exc).__module__ == "PIL.Image" and type(exc).__name__ == "DecompressionBombError":
-                        images = []
-                        fallback_issue = "embedded_image_limit"
-                    else:
-                        raise
-                if not images:
-                    images = [(_render_page(path, page, settings), "image/png", {"page": page})]
-                    if fallback_issue:
-                        images[0] = (images[0][0], images[0][1], {"page": page, "source": "page_render_fallback"})
-            else:
-                continue
-            all_compared, page_issues, observations = True, [], []
-            if fallback_issue:
-                page_issues.append(fallback_issue)
-            for image_bytes, mime_type, locator in images:
-                image_hash = sha256(image_bytes).hexdigest()
-                reused = image_hash in recognition_cache
-                if reused:
-                    checked = recognition_cache[image_hash]
-                else:
-                    checked = recognize_checked(image_bytes, mime_type, settings, transport=transport,
-                                                progress_callback=progress_callback, file_id=file_id,
-                                                page=locator.get("page"), cache_dir=cache_dir,
-                                                image_hash=image_hash)
-                    recognition_cache[image_hash] = checked
-                all_compared = all_compared and checked["readable"]
-                page_issues.extend(checked["issues"])
-                metadata = {"recognition_candidates": checked["candidates"], "recognition_quality_policy": checked["quality_policy"],
-                            "image_hash": image_hash, "recognition_issues": checked["issues"],
-                            "image_locator": locator, "recognition_cache_reused": reused}
-                observations.append(metadata)
-                # Native blocks remain intact; only individually compared
-                # segments enter text blocks. Others remain visible candidates.
-                for segment_index, block in enumerate(checked["checked_blocks"]):
-                    recognized_locator = dict(locator, recognized_block=segment_index + 1)
-                    result["blocks"].append({"block_id": sha256((result["content_hash"] + json.dumps(recognized_locator, sort_keys=True) + "recognized-v2").encode()).hexdigest(),
-                                             "text": block["text"], "kind": "recognized_page", "locator": locator,
-                                             "metadata": dict(metadata, recognition_quality=block["quality"],
-                                                              recognition_source_refs=block["source_refs"],
-                                                              recognized_block=segment_index + 1)})
-            unit["recognition"] = {"images": observations, "issues": list(dict.fromkeys(page_issues)),
-                                   "status": "compared" if all_compared else "incomplete"}
-            if all_compared and unit["state"] == "unreadable":
-                unit.update(state="readable", reason="independent_blocks_compared_not_source_truth")
-            result["issues"].extend(unit["unit_id"] + ": " + issue for issue in page_issues)
-            if progress_callback:
-                progress_callback({"stage": "recognition", "event": "page_finished", "file_id": file_id,
-                                   "page": page_number, "page_total": len(eligible),
-                                   "elapsed_ms": round((perf_counter() - started) * 1000), "status": "candidate", "issues": list(dict.fromkeys(page_issues))})
-        except (StaleLease, RunPaused):
-            raise
-        except Exception as exc:
-            # Pillow uses a direct Exception subclass for its oversized-image
-            # guard. Keep that page as a gap without swallowing other bugs.
-            pillow_limit = type(exc).__module__ == "PIL.Image" and type(exc).__name__ == "DecompressionBombError"
-            if not pillow_limit and not isinstance(exc, (OSError, ValueError, RuntimeError, subprocess.SubprocessError)):
-                raise
-            result["issues"].append(unit["unit_id"] + ": recognition_failed:" + type(exc).__name__)
-            unit["recognition"] = {"status": "failed", "issues": ["recognition_failed:" + type(exc).__name__]}
-            if progress_callback:
-                progress_callback({"stage": "recognition", "event": "page_finished", "file_id": file_id,
-                                   "page": page_number, "page_total": len(eligible),
-                                   "elapsed_ms": round((perf_counter() - started) * 1000),
-                                   "status": "failed", "issues": unit["recognition"]["issues"]})
+                    # A failed page must remain a page-level gap. Do not cancel
+                    # sibling pages: cancellation would surface as a task-level
+                    # CancelledError and discard otherwise valid pages.
+                    apply_failure(unit, exc)
     return result

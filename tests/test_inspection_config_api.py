@@ -55,13 +55,13 @@ class InspectionConfigApiTests(unittest.TestCase):
         self.assertEqual(422, response.status_code)
         self.assertEqual(original['revision'], self.client.get('/v1/debug/inspection-config').json()['revision'])
         changed = deepcopy(original['config'])
-        changed['query_policy']['month_source'] = 'task_month'
+        changed['query_policy'] = {'month_source': 'fixed', 'fixed_month': '07'}
         self.assertEqual(200, self.client.post('/v1/debug/inspection-config', json={
             'config': changed, 'expectedRevision': original['revision']}).status_code)
         stale = self.client.post('/v1/debug/inspection-config', json={
             'config': original['config'], 'expectedRevision': original['revision']})
         self.assertIn(stale.status_code, (409, 422))
-        self.assertEqual('task_month', self.client.get('/v1/debug/inspection-config').json()['config']['query_policy']['month_source'])
+        self.assertEqual('fixed', self.client.get('/v1/debug/inspection-config').json()['config']['query_policy']['month_source'])
 
     def test_save_requires_revision_and_rejects_unknown_fields(self):
         original = self.client.get('/v1/debug/inspection-config').json()

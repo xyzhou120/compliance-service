@@ -11,6 +11,11 @@ provider = "multipart-http"
 base_url = "http://127.0.0.1:7000"
 api_key_env = ""
 timeout_seconds = 30
+# Page recognition worker count: 1 (default) or 2. A bounded value protects
+# the model server and preserves per-page evidence order.
+recognition_concurrency = 1
+max_pages = 20
+pdf_render_dpi = 150
 
 [vision]
 enabled = false

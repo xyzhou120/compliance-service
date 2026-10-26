@@ -14,6 +14,61 @@ def settings():
 
 
 class RecognitionQualityTests(unittest.TestCase):
+    def test_two_page_workers_preserve_evidence_order_and_bound_concurrency(self):
+        from pypdf import PdfWriter
+        from threading import Lock
+        from time import sleep
+        native = {"file_id":"report","format":"pdf","content_hash":"hash","blocks":[],"issues":[],
+                  "coverage":[{"unit_id":f"page:{page}","state":"unreadable","reason":"page_image_requires_ocr"}
+                              for page in (1,2,3)]}
+        running = 0; peak = 0; lock = Lock()
+        def fake_recognize(image_bytes, _mime, _settings, **_kwargs):
+            nonlocal running, peak
+            with lock:
+                running += 1; peak = max(peak, running)
+            sleep(0.03)
+            with lock: running -= 1
+            return {"readable": True, "issues": [], "candidates": [], "quality_policy": "test",
+                    "checked_blocks": [{"text": image_bytes.decode(), "quality": "independently_compared_candidate",
+                                        "source_refs": []}]}
+        with TemporaryDirectory() as directory:
+            path=Path(directory)/"report.pdf"; writer=PdfWriter()
+            for _ in range(3): writer.add_blank_page(width=100,height=100)
+            with path.open("wb") as stream: writer.write(stream)
+            with patch("compliance_service.ocr_documents.parse_document",side_effect=lambda *args,**kwargs:__import__('copy').deepcopy(native)), \
+                 patch("compliance_service.ocr_documents._pdf_image_candidates",side_effect=lambda _path,page,_reader:[(str(page).encode(),"image/png",{"page":page})]), \
+                 patch("compliance_service.ocr_documents.recognize_checked",side_effect=fake_recognize):
+                one=settings(); one["ocr"]["recognition_concurrency"]=1
+                serial=parse_with_models(path,file_id="report",settings=one)
+                two=settings(); two["ocr"]["recognition_concurrency"]=2
+                concurrent=parse_with_models(path,file_id="report",settings=two)
+        self.assertEqual(2,peak)
+        self.assertEqual(serial["blocks"],concurrent["blocks"])
+        self.assertEqual(serial["coverage"],concurrent["coverage"])
+        self.assertEqual(serial["recognition_budget"],concurrent["recognition_budget"])
+
+    def test_page_worker_error_does_not_cancel_sibling_pages(self):
+        from pypdf import PdfWriter
+        native={"file_id":"report","format":"pdf","content_hash":"hash","blocks":[],"issues":[],
+                "coverage":[{"unit_id":f"page:{page}","state":"unreadable","reason":"page_image_requires_ocr"}
+                            for page in (1,2)]}
+        with TemporaryDirectory() as directory:
+            path=Path(directory)/"report.pdf";writer=PdfWriter();writer.add_blank_page(width=100,height=100);writer.add_blank_page(width=100,height=100)
+            with path.open("wb") as stream:writer.write(stream)
+            def images(_path,page,_reader):
+                if page==1: raise NotImplementedError("unsupported image filter")
+                return [(b"page2","image/png",{"page":2})]
+            with patch("compliance_service.ocr_documents.parse_document",return_value=native), \
+                 patch("compliance_service.ocr_documents._pdf_image_candidates",side_effect=images), \
+                 patch("compliance_service.ocr_documents._render_page",return_value=b"fallback"), \
+                 patch("compliance_service.ocr_documents.recognize_checked",return_value={"readable":False,"issues":["independent_recognition_not_confirmed"],"candidates":[],"quality_policy":"test","checked_blocks":[]}):
+                value=settings();value["ocr"]["recognition_concurrency"]=2
+                result=parse_with_models(path,file_id="report",settings=value)
+        self.assertEqual(2,len(result["coverage"]))
+        self.assertEqual("incomplete",result["coverage"][0]["recognition"]["status"])
+        self.assertEqual("incomplete",result["coverage"][1]["recognition"]["status"])
+        self.assertNotIn("CancelledError",str(result))
+
     def test_recognition_budget_reports_skipped_pages(self):
         from pypdf import PdfWriter
         settings_value = settings(); settings_value["ocr"]["max_pages"] = 1
@@ -153,6 +208,8 @@ class RecognitionQualityTests(unittest.TestCase):
             self.assertEqual("recognized_page", result["blocks"][0]["kind"])
             self.assertEqual(before, path.read_bytes())
             self.assertEqual({"image": 1}, result["blocks"][0]["locator"])
+            self.assertNotIn("recognition_candidates", result["blocks"][0]["metadata"])
+            self.assertEqual(2, len(result["coverage"][0]["recognition"]["images"][0]["recognition_candidates"]))
             self.assertNotIn("secret-not-for-provenance", str(result))
 
     def test_disabled_settings_open_no_socket_and_do_not_expose_secret(self):

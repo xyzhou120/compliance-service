@@ -7,6 +7,8 @@ import json
 from importlib.metadata import version
 from importlib.resources import files as package_files
 import os
+import gc
+import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from time import perf_counter
@@ -61,7 +63,8 @@ class LocalDocumentSource:
     def __init__(self, storage_dir, *, parser=parse_document, max_file_bytes=50 * 1024 * 1024, model_settings=None):
         self.storage_dir = _io_path(Path(storage_dir))
         from .config import load_model_settings
-        from .ocr_documents import parse_with_models, public_model_settings
+        from .ocr_documents import (PROVIDER_CONTRACT_VERSION, RECOGNITION_CACHE_VERSION,
+                                    parse_with_models, public_model_settings)
         self.model_settings = model_settings if model_settings is not None else load_model_settings()
         self._uses_model_parser = parser is parse_document
         self.parser = (lambda path, *, file_id, progress_callback=None, cache_dir=None: parse_with_models(
@@ -73,8 +76,8 @@ class LocalDocumentSource:
             "implementation": sha256(package_files("compliance_service").joinpath("parsers.py").read_bytes()).hexdigest(),
             "dependencies": {name: version(name) for name in ("pypdf", "python-docx", "openpyxl")},
             "models": public_model_settings(self.model_settings),
-            "recognition_implementation": sha256(package_files("compliance_service").joinpath("ocr_documents.py").read_bytes()).hexdigest(),
-            "provider_implementation": sha256(package_files("compliance_service").joinpath("providers.py").read_bytes()).hexdigest(),
+            "recognition_implementation": RECOGNITION_CACHE_VERSION,
+            "provider_implementation": PROVIDER_CONTRACT_VERSION,
         })
 
     def __call__(self, run: dict, *, progress_callback=None) -> dict:
@@ -106,6 +109,7 @@ class LocalDocumentSource:
         entries = list(manifest["files"])
         handler = (spec.get("inspection_item") or {}).get("handler", spec["item_code"])
         staged = run.get("catalog_profile") == "oceanbase" and handler == "stop_work_unload"
+        spool_parsed = self._uses_model_parser and any(self.model_settings.get(kind, {}).get("enabled") for kind in ("ocr", "vision"))
         if staged:
             entries.sort(key=lambda entry: (STOP_WORK_ORDER.get(entry.get("material_group"), 9),
                                             entry.get("report_date") or "", entry["file_id"]))
@@ -118,7 +122,8 @@ class LocalDocumentSource:
                 # A partial scan is progress only. Final findings still require all
                 # relevant documents and the normal evidence/association gates.
                 provisional = []
-                for artifact, parsed in parsed_files:
+                for artifact, parsed_ref in parsed_files:
+                    parsed = json.loads(parsed_ref.read_text(encoding="utf-8")) if isinstance(parsed_ref, Path) else parsed_ref
                     for block in parsed["blocks"]:
                         provisional.append({**block, "evidence_id": digest({"file_id": artifact["file_id"],
                                             "block_id": block["block_id"]}), "file_id": artifact["file_id"],
@@ -191,7 +196,12 @@ class LocalDocumentSource:
                 artifact.update(content_hash=content_hash, byte_size=len(data), original_path=str(saved),
                                 format=parsed["format"], status="acquired", parser_version=PARSER_VERSION,
                                 parser_revision=self.parser_revision)
-                parsed_files.append((artifact, parsed))
+                if spool_parsed:
+                    spool_path = self.storage_dir / namespace / "run-parsed" / run["run_id"] / (digest({"file_id": file_id, "content_hash": content_hash}) + ".json")
+                    _atomic_bytes(spool_path, canonical(parsed).encode("utf-8"))
+                    parsed_files.append((artifact, spool_path))
+                else:
+                    parsed_files.append((artifact, parsed))
                 for unit in parsed["coverage"]:
                     coverage.append({"file_id": file_id, **unit})
                     if unit["state"] not in {"readable", "empty"}:
@@ -200,6 +210,9 @@ class LocalDocumentSource:
                         gaps.append(f"{file_id}/{unit['unit_id']}: {issue}")
                 if not parsed["coverage"]:
                     gaps.append(f"{file_id}: missing parser coverage")
+                if spool_parsed:
+                    del parsed
+                    gc.collect()
             except (StaleLease, RunPaused):
                 raise
             except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -213,7 +226,8 @@ class LocalDocumentSource:
                      elapsed_ms=round((perf_counter()-file_started)*1000, 3))
         snapshot_id = digest({**owner, "manifest_hash": sha256(manifest_bytes).hexdigest(), "files": files})
         evidence = []
-        for artifact, parsed in parsed_files:
+        for artifact, parsed_ref in parsed_files:
+            parsed = json.loads(parsed_ref.read_text(encoding="utf-8")) if isinstance(parsed_ref, Path) else parsed_ref
             for block in parsed["blocks"]:
                 evidence_id = digest({**owner, "snapshot_id": snapshot_id, "file_id": artifact["file_id"],
                                       "block_id": block["block_id"]})
@@ -239,7 +253,8 @@ class LocalDocumentSource:
                              for file in files)
         daily_candidate_evidence = []
         if daily_relevant:
-            for artifact, parsed in parsed_files:
+            for artifact, parsed_ref in parsed_files:
+                parsed = json.loads(parsed_ref.read_text(encoding="utf-8")) if isinstance(parsed_ref, Path) else parsed_ref
                 if artifact.get("material_group") not in {"prevention_daily", "dispatch_daily", "analysis", "release"}:
                     continue
                 for unit in parsed.get("coverage", []):
@@ -283,6 +298,8 @@ class LocalDocumentSource:
                  elapsed_ms=round((perf_counter()-extract_started)*1000, 3))
         progress(stage="source", event="source_finished", status="completed", file_total=len(files),
                  elapsed_ms=round((perf_counter()-clock_start)*1000, 3))
+        if spool_parsed:
+            shutil.rmtree(self.storage_dir / namespace / "run-parsed" / run["run_id"], ignore_errors=True)
         return {
             **owner, "snapshot_id": snapshot_id, "profile": "local-documents",
             "parser_version": PARSER_VERSION, "parser_revision": self.parser_revision,
