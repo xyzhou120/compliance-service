@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>文档合规检查 · 本地调试</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101923; --panel:#172431; --panel-2:#1d2d3b; --line:#304454; --text:#e8f0f2; --muted:#9aadb5; --accent:#e2a94b; --accent-2:#8bc4bd; --danger:#ed8b80; --ok:#8fd1a9; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 80% -10%, #24424b 0, transparent 34%),var(--bg); color:var(--text); font:15px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif; }
+    main { width:min(1400px, calc(100% - 40px)); margin:0 auto; padding:32px 0 64px; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:28px; }
+    h1 { margin:0; font-size:clamp(28px,4vw,44px); line-height:1.1; letter-spacing:-.03em; }
+    .intro { max-width:640px; color:var(--muted); margin:12px 0 0; }
+    .version { color:var(--accent); font:12px/1.3 ui-monospace,Consolas,monospace; white-space:nowrap; }
+    .layout { display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(0, 1fr); gap:20px; align-items:start; }
+    section { min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; }
+    h2 { margin:0 0 18px; font-size:18px; letter-spacing:-.01em; }
+    label { display:block; margin:16px 0 7px; color:var(--muted); font-size:13px; }
+    input, select { width:100%; border:1px solid #405565; border-radius:8px; padding:11px 12px; background:#0f1b25; color:var(--text); font:inherit; outline:none; }
+    input:focus, select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(226,169,75,.16); }
+    .hint { color:var(--muted); font-size:12px; margin:7px 0 0; }
+    .checks { display:grid; gap:9px; margin-top:16px; }
+    .checks { grid-template-columns:1fr 1fr; }
+    .checks label { margin:0; }
+    .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
+    .material-group { border-top:1px solid var(--line); padding:12px 0; margin-top:0; }
+    .material-group summary { display:flex; justify-content:space-between; gap:10px; align-items:center; color:var(--text); padding:4px 0; }
+    .material-group summary::before { content:'+'; color:var(--accent-2); font-size:18px; }
+    .material-group[open] summary::before { content:'−'; }
+    .material-group .group-title { flex:1; font-size:14px; font-weight:600; }
+    .group-count { font-size:12px; color:var(--muted); }
+    .file-picker { margin-top:12px; font-size:12px; padding:8px; }
+    .attachment-row { display:flex; align-items:center; gap:8px; margin-top:6px; padding:5px 0; font-size:12px; overflow-wrap:anywhere; }
+    .attachment-row span { flex:1; min-width:0; }
+    .remove { width:auto; margin:0; padding:3px 8px; font-size:12px; background:transparent; color:var(--muted); border:1px solid var(--line); }
+    .material-group textarea { min-height:72px; }
+    .bundle-summary { margin:14px 0; padding:10px 0; color:var(--accent-2); border-bottom:1px solid var(--line); font-size:13px; }
+    .complete { display:flex; align-items:flex-start; gap:8px; font-size:13px; }
+    .complete input { width:auto; margin-top:3px; accent-color:var(--accent); }
+    .bundle-info { font-size:12px; color:var(--muted); overflow-wrap:anywhere; margin:12px 0; }
+    fieldset { border:0; margin:0; padding:0; min-width:0; }
+    [hidden] { display:none !important; }
+    .check { display:flex; align-items:flex-start; gap:10px; padding:10px 11px; border:1px solid var(--line); border-radius:9px; background:#14212d; cursor:pointer; }
+    .check:hover { border-color:#55717e; }
+    .check input { width:auto; margin-top:4px; accent-color:var(--accent); }
+    .check strong { display:block; font-size:14px; }
+    .check span { display:block; color:var(--muted); font-size:12px; }
+    button { width:100%; margin-top:20px; border:0; border-radius:8px; padding:12px 16px; color:#11191e; background:var(--accent); font-weight:700; font-size:15px; cursor:pointer; }
+    button:hover { filter:brightness(1.08); } button:disabled { cursor:wait; opacity:.55; }
+    button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+    ::selection { background:#e2a94b; color:#101923; }
+    input::placeholder { color:var(--muted); }
+    input { caret-color:var(--accent); }
+    * { scrollbar-color:#527080 #101923; scrollbar-width:thin; }
+    .secondary { background:transparent; border:1px solid #597381; color:var(--text); font-size:13px; padding:9px 12px; margin-top:10px; }
+    .actions { display:flex; gap:10px; }
+    .actions button { width:auto; margin-top:0; }
+    textarea { width:100%; padding:10px; margin-top:8px; resize:vertical; background:#0f1b25; border:1px solid #405565; border-radius:8px; color:var(--text); font:12px/1.5 ui-monospace,Consolas,monospace; }
+    a { color:var(--accent-2); text-underline-offset:4px; }
+    .debug-task { margin:0 0 20px; padding:15px; border:1px solid #53634d; border-radius:10px; background:rgba(139,196,189,.06); }
+    .debug-task h3 { margin:0 0 6px; font-size:15px; }
+    .debug-task .checks { margin-top:10px; }
+    .debug-task button { background:var(--accent-2); }
+    .evidence-list { margin-top:10px; max-height:520px; overflow:auto; }
+    .evidence-row { padding:12px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+    .evidence-row strong,.evidence-row span,.evidence-row small { display:block; }
+    .evidence-row strong { font-size:13px; }
+    .evidence-row span { color:var(--muted); font-size:12px; margin:5px 0; }
+    .evidence-row small { font-size:13px; white-space:pre-wrap; }
+    .history { margin:0 0 20px; padding:15px; border:1px solid var(--line); border-radius:10px; background:#13212b; }
+    .history-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .history-head h3 { margin:0; font-size:15px; }
+    .history-refresh { width:auto; margin:0; padding:6px 9px; font-size:12px; background:transparent; border:1px solid #597381; color:var(--text); }
+    .history-list { display:grid; gap:8px; margin-top:10px; max-height:340px; overflow:auto; }
+    .history-item { width:100%; margin:0; padding:10px; text-align:left; color:var(--text); background:#192b36; border:1px solid #304854; border-radius:8px; }
+    .history-item:hover { border-color:var(--accent-2); }
+    .history-item[aria-pressed="true"] { border-color:var(--accent-2); background:#213d46; }
+    .history-item strong,.history-item span,.history-item small { display:block; }
+    .history-item span { color:var(--muted); font-size:12px; margin-top:3px; }
+    .history-item small { color:var(--accent-2); font-size:11px; margin-top:5px; }
+    .history-empty { color:var(--muted); font-size:12px; margin:10px 0 0; }
+    .config-item { border-top:1px solid var(--line); padding-top:14px; margin-top:14px; }
+    .config-material { border-bottom:1px solid var(--line); padding:10px 0; }
+    .config-material .field-grid { gap:0 10px; }
+    .config-material label { margin-top:8px; }
+    .config-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .config-actions button { width:auto; margin:0; }
+    .config-summary { color:var(--accent-2); font-size:12px; margin:10px 0; overflow-wrap:anywhere; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); padding-bottom:16px; margin-bottom:16px; }
+    .toolbar h2 { margin:0; }
+    .state { color:var(--muted); font-size:13px; }
+    .state.error { color:var(--danger); }
+    .empty { min-height:260px; display:grid; place-items:center; text-align:center; color:var(--muted); border:1px dashed #405565; border-radius:10px; padding:24px; }
+    .empty strong { color:var(--text); display:block; margin-bottom:5px; }
+    .result { border:1px solid var(--line); border-radius:10px; margin:12px 0; overflow:hidden; background:#14212c; }
+    .result-head { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 15px; background:var(--panel-2); }
+    .result-head strong { font-size:14px; overflow-wrap:anywhere; min-width:0; }
+    .badge { padding:3px 9px; border-radius:99px; font:700 12px/1.4 ui-monospace,Consolas,monospace; text-transform:uppercase; }
+    .badge.pass { color:var(--ok); background:rgba(143,209,169,.13); } .badge.no_pass,.badge.failed { color:var(--danger); background:rgba(237,139,128,.13); } .badge.pending,.badge.queued,.badge.running { color:var(--accent); background:rgba(226,169,75,.13); } .badge.unverifiable { color:#b7bbf0; background:rgba(183,187,240,.13); }
+    .result-body { padding:14px 15px; }
+    .meta { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:12px; }
+    .meta div { color:var(--muted); font-size:12px; } .meta b { display:block; color:var(--text); font:13px ui-monospace,Consolas,monospace; overflow-wrap:anywhere; }
+    .notice { border-left:1px solid var(--accent); padding:7px 10px; color:#d9e3e5; background:rgba(226,169,75,.06); font-size:13px; overflow-wrap:anywhere; }
+    details { margin-top:12px; } summary { color:var(--accent-2); cursor:pointer; font-size:13px; }
+    pre { max-height:420px; overflow:auto; margin:9px 0 0; padding:12px; border-radius:8px; background:#0c151d; color:#c5d4d8; font:12px/1.5 ui-monospace,Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+    @media (max-width:900px) { main { width:calc(100% - 24px); padding-top:26px; } header { display:block; } .version { display:block; margin-top:14px; } .layout { grid-template-columns:1fr; } .meta { grid-template-columns:1fr 1fr; } }
+    @media (max-width:420px) { .field-grid,.checks { grid-template-columns:1fr; } section { padding:16px; } .toolbar { flex-wrap:wrap; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>文档合规检查</h1><p class="intro">选择检查项，按业务资料清单添加多份附件或地址，直接运行跨文件检查。</p></div>
+      <div class="version"><a href="/docs" target="_blank" rel="noopener">接口文档</a> · LOCAL DEBUG</div>
+    </header>
+    <div class="layout">
+      <section aria-labelledby="form-title">
+        <h2 id="form-title">创建一次检查</h2>
+        <details id="inspection-config-panel" class="history">
+          <summary>检查项与清单配置</summary>
+          <p class="hint">检查项 code、清单 ID 和周期按环境保存。修改仅影响后续新任务；业务核验处理器不随 code 改变。</p>
+          <p id="inspection-config-summary" class="config-summary">正在载入配置…</p>
+          <div id="inspection-config-editor"></div>
+          <div class="config-actions"><button id="config-add-item" class="history-refresh" type="button">新增检查项配置</button><button id="config-reload" class="history-refresh" type="button">重新载入</button><button id="config-save" class="history-refresh" type="button">保存配置</button></div>
+          <details><summary>高级 JSON 配置</summary><textarea id="inspection-config-json" rows="12" aria-label="检查项配置 JSON"></textarea><button id="config-apply-json" class="secondary" type="button">应用 JSON 到编辑表单</button></details>
+          <p id="inspection-config-state" class="hint" role="status" aria-live="polite"></p>
+        </details>
+        <div class="history" aria-labelledby="history-title">
+          <div class="history-head"><h3 id="history-title">任务执行记录</h3><button id="history-refresh" class="history-refresh" type="button">刷新</button></div>
+          <p class="hint">按提交时间倒序显示，点击查看结果、文件和证据。记录保存在本机账本中。</p>
+          <div class="field-grid"><div><label for="history-mine">矿井筛选</label><input id="history-mine" placeholder="全部矿井"></div><div><label for="history-cycle">周期筛选</label><input id="history-cycle" placeholder="全部周期"></div></div>
+          <div id="history-list" class="history-list"><p class="history-empty">正在载入记录…</p></div>
+          <div class="history-head" style="margin-top:10px"><button id="history-prev" class="history-refresh" type="button" disabled>上一页</button><span id="history-count" class="hint" aria-live="polite"></span><button id="history-next" class="history-refresh" type="button" disabled>下一页</button></div>
+        </div>
+        <div class="debug-task" aria-labelledby="debug-task-title">
+          <h3 id="debug-task-title">模拟上层服务触发任务</h3>
+          <p class="hint">填写上游参数并指定本地资料清单，结果显示在右侧。回调地址只用于模拟报文，不发送结果。</p>
+          <div class="field-grid">
+            <div><label for="debug-mine-id">mineId</label><input id="debug-mine-id" value="MINE-001" autocomplete="off"></div>
+            <div><label for="debug-cycle">checkCycle</label><input id="debug-cycle" value="2026-10" placeholder="YYYY-MM"></div>
+          </div>
+          <div class="field-grid">
+            <div><label for="debug-status">status</label><select id="debug-status"><option value="running">running · 触发检查</option></select></div>
+            <div><label for="debug-data-source">取数方式</label><select id="debug-data-source"><option value="manifest">已有本地资料清单</option><option value="oceanbase" disabled>OceanBase 清单查询（未配置）</option></select></div>
+          </div>
+          <div id="debug-manifest-fields"><label for="debug-manifest">manifestPath（绝对路径）</label>
+          <input id="debug-manifest" placeholder="D:\\资料\\2026-10\\manifest.json" autocomplete="off"></div>
+          <label for="debug-callback">resultCallbackUrl（仅模拟报文展示）</label>
+          <input id="debug-callback" value="https://debug.invalid/local-result" autocomplete="off">
+          <div id="debug-configured-items" class="checks" aria-label="模拟任务检查项">
+            <label class="check"><input id="debug-item-stop" value="stop_work_unload" type="checkbox" checked><span><strong>停工撤人与卸压</strong>stop_work_unload</span></label>
+            <label class="check"><input id="debug-item-relief" value="relief_effects" type="checkbox"><span><strong>解危效果检验</strong>relief_effects</span></label>
+          </div>
+          <button id="debug-task-submit" type="button">接收任务并在本地执行</button>
+          <details><summary>任务报文 JSON</summary><textarea id="debug-task-json" rows="7" placeholder='{"mineId":"001","status":"running","checkCycle":"2026-10","items":[{"itemCode":"stop_work_unload"}]}'></textarea><button id="debug-apply-json" type="button" class="secondary">从上游报文填入参数</button></details>
+          <p id="debug-task-state" class="hint" role="status" aria-live="polite"></p>
+        </div>
+        <details id="local-attachment-tools"><summary>直接添加附件或查询已有运行</summary>
+        <form id="run-form">
+          <div class="checks" aria-label="检查项">
+            <label class="check"><input type="checkbox" name="item" value="stop_work_unload" checked><span><strong>停工撤人与卸压</strong>stop_work_unload</span></label>
+            <label class="check"><input type="checkbox" name="item" value="relief_effects"><span><strong>解危效果检验</strong>relief_effects</span></label>
+          </div>
+          <div class="field-grid">
+          <div><label for="mine">矿井编码</label><input id="mine" name="mine" required value="MINE-001"></div>
+          <div><label for="cycle">检查周期</label><input id="cycle" name="cycle" required value="2026-10" placeholder="YYYY-MM" pattern="\d{4}-(0[1-9]|1[0-2])" title="请使用 YYYY-MM，例如 2026-10"></div>
+          </div>
+          <details>
+          <summary>来源与环境</summary>
+          <div class="field-grid"><div>
+          <label for="source">来源系统</label>
+          <input id="source" name="source" required value="local-documents">
+          </div><div>
+          <label for="environment">环境标识</label>
+          <select id="environment" name="environment"><option value="local">local</option><option value="test">test</option></select>
+          </div></div>
+          </details>
+          <label for="input-mode">资料提交方式</label>
+          <select id="input-mode"><option value="bundle">按业务清单添加附件 / 地址</option><option value="manifest">使用已有 manifest.json 路径</option></select>
+          <fieldset id="bundle-fields">
+            <div class="field-grid">
+              <div><label for="period-start">资料起始日期</label><input id="period-start" type="date" required></div>
+              <div><label for="period-end">资料截止日期</label><input id="period-end" type="date" required></div>
+            </div>
+            <p class="hint">每类可选择多份日报、分批追加附件，也可粘贴地址，每行一份。可以混用本地上传、本地路径和 HTTP/HTTPS 链接。</p>
+            <div id="material-groups" aria-label="业务资料清单"><p class="hint">正在载入资料清单…</p></div>
+            <div id="bundle-summary" class="bundle-summary" aria-live="polite">尚未添加附件</div>
+            <label class="complete"><input id="source-complete" type="checkbox"><span>本次所列矿井、日期范围的资料已完整取得</span></label>
+            <p class="hint">未勾选时仍可调试；服务会保留资料范围不完整的缺口。</p>
+          </fieldset>
+          <fieldset id="manifest-fields" hidden disabled>
+          <label for="manifest">manifest.json 绝对路径</label>
+          <input id="manifest" name="manifest" required placeholder="D:\煤矿资料\2026-10\manifest.json" autocomplete="off">
+          <p class="hint">服务从本机读取；来源系统、矿井、环境必须与 manifest 一致。</p>
+          <details>
+            <summary>从请求 JSON 填充表单</summary>
+            <label for="request-json">粘贴 Swagger 请求或示例 request.json</label>
+            <textarea id="request-json" rows="6" placeholder='{"sourceSystem":"local-documents", "scope":{"manifest":"..."}}'></textarea>
+            <button id="apply-json" class="secondary" type="button">填入表单</button>
+          </details>
+          </fieldset>
+          <button id="submit" type="submit">提交检查</button>
+        </form>
+        <details>
+          <summary>查询已有运行</summary>
+          <label for="run-ids">运行编号（多个用逗号或换行分隔）</label>
+          <textarea id="run-ids" rows="3"></textarea>
+          <p class="hint">使用上方的来源系统、矿井编码、环境标识查询，无需再次提交任务。</p>
+          <button id="lookup" class="secondary" type="button">查询并跟踪运行</button>
+        </details>
+        </details>
+      </section>
+      <section aria-labelledby="result-title">
+        <div class="toolbar"><h2 id="result-title">运行结果</h2><span id="state" class="state" role="status" aria-live="polite">尚未提交</span></div>
+        <div class="actions"><button id="stop" class="secondary" type="button" hidden>停止自动刷新</button><button id="download" class="secondary" type="button" hidden>下载结果 JSON</button></div>
+        <div id="bundle-info" class="bundle-info"></div>
+        <div id="results" class="empty"><div><strong>等待一次检查</strong><span>提交后会自动轮询运行状态。请保持 Worker 进程运行。</span></div></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    (() => {
+      const form = document.getElementById('run-form');
+      const submit = document.getElementById('submit');
+      const state = document.getElementById('state');
+      const results = document.getElementById('results');
+      const lookup = document.getElementById('lookup');
+      const stop = document.getElementById('stop');
+      const download = document.getElementById('download');
+      const debugTaskSubmit = document.getElementById('debug-task-submit');
+      const debugTaskState = document.getElementById('debug-task-state');
+      const historyList = document.getElementById('history-list');
+      const historyRefresh = document.getElementById('history-refresh');
+      const inputMode = document.getElementById('input-mode');
+      const groupContainer = document.getElementById('material-groups');
+      let materialGroups = [];
+      let currentRuleVersion;
+      fetch('/v1/definitions').then((r)=>r.json()).then((body)=>{currentRuleVersion=body.available_document_rulebook?.version;}).catch(()=>{});
+      const groupFiles = new Map();
+      let currentRuns = [];
+      let generation = 0;
+      const now = new Date();
+      form.elements.cycle.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,'0')}`;
+      document.getElementById('debug-cycle').value=form.elements.cycle.value;
+      const debugSource=document.getElementById('debug-data-source');
+      debugSource.addEventListener('change',()=>{document.getElementById('debug-manifest-fields').hidden=debugSource.value==='oceanbase';});
+      fetch('/v1/debug/task-options').then((r)=>r.json()).then((options)=>{
+        if(options.oceanbase_available){
+          const option=debugSource.querySelector('option[value="oceanbase"]');option.disabled=false;option.textContent='OceanBase 清单查询';
+          debugSource.value='oceanbase';document.getElementById('debug-manifest-fields').hidden=true;
+          if(options.allowed_mines?.length===1) document.getElementById('debug-mine-id').value=options.allowed_mines[0];
+        }
+      }).catch(()=>{});
+      const setState = (message, error=false) => { state.textContent=message; state.className=error ? 'state error' : 'state'; };
+      const ownerFromForm = () => ({sourceSystem:form.elements.source.value.trim(), mineCode:form.elements.mine.value.trim(), environment:form.elements.environment.value.trim()});
+      const requestJson = async (url, options={}) => {
+        const {timeoutMs=20000, ...fetchOptions} = options;
+        let response;
+        try { response = await fetch(url, {...fetchOptions, signal:AbortSignal.timeout(timeoutMs)}); }
+        catch { throw new Error('连接失败或请求超时，请确认 API 已启动，再重新查询运行'); }
+        let body;
+        try { body = await response.json(); } catch { throw new Error(`接口未返回 JSON（HTTP ${response.status}），请确认服务版本与地址`); }
+        if (!response.ok) {
+          const messages = {404:'运行不存在或来源、矿井、环境不匹配',409:'活动任务参数冲突，请核对请求',422:'请求参数有误，请核对路径和必填项'};
+          const detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || '');
+          throw new Error(`${messages[response.status] || '调用失败'}（HTTP ${response.status}）：${detail}`);
+        }
+        return body;
+      };
+      const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const configState=document.getElementById('inspection-config-state');
+      const configEditor=document.getElementById('inspection-config-editor');
+      const configJson=document.getElementById('inspection-config-json');
+      let inspectionDraft=null, inspectionRevision=null;
+      let supportedInspectionItems=[{itemCode:'stop_work_unload',name:'停工撤人与卸压',handler:'stop_work_unload',enabled:true},{itemCode:'relief_effects',name:'解危效果检验',handler:'relief_effects',enabled:true}];
+      const cadenceNames={annual:'年报',semiannual:'半年报',monthly:'月报',daily:'日报',weekly:'周报（暂按月取数）'};
+      const groupNames={prevention_daily:'防冲工作日报',dispatch_daily:'调度日报',analysis:'日分析',release:'生产组织通知',relief_acceptance:'钻孔验收',threshold:'预警临界指标',design:'防冲设计',workface_risk:'工作面评价',coal_risk:'煤层评价'};
+      const choices=(values,current)=>Object.entries(values).map(([value,label])=>`<option value="${esc(value)}" ${value===current?'selected':''}>${esc(label)}</option>`).join('');
+      const syncConfigJson=()=>{configJson.value=JSON.stringify(inspectionDraft,null,2);};
+      const renderConfiguredItems=(config)=>{
+        const selectedDebug=new Set([...document.querySelectorAll('#debug-configured-items input:checked')].map(i=>i.dataset.code || i.value));
+        const selectedLocal=new Set([...form.querySelectorAll('input[name="item"]:checked')].map(i=>i.value));
+        supportedInspectionItems=config.items.filter(i=>i.enabled);
+        document.getElementById('debug-configured-items').innerHTML=supportedInspectionItems.map((item,index)=>`<label class="check"><input type="checkbox" data-code="${esc(item.itemCode)}" value="${esc(item.itemCode)}" ${selectedDebug.has(item.itemCode)||(!selectedDebug.size&&index===0)?'checked':''}><span><strong>${esc(item.name)}</strong>${esc(item.itemCode)}</span></label>`).join('') || '<p class="hint">暂无启用检查项，请启用配置后再提交。</p>';
+        const localChecks=form.querySelector('.checks');
+        localChecks.innerHTML=supportedInspectionItems.map((item,index)=>`<label class="check"><input type="checkbox" name="item" value="${esc(item.itemCode)}" ${selectedLocal.has(item.itemCode)||(!selectedLocal.size&&index===0)?'checked':''}><span><strong>${esc(item.name)}</strong>${esc(item.itemCode)}</span></label>`).join('');
+        localChecks.querySelectorAll('input').forEach(input=>input.addEventListener('change',updateGroups));
+        for(const group of materialGroups) if(group.handlers)group.items=supportedInspectionItems.filter(item=>group.handlers.includes(item.handler)).map(item=>item.itemCode);
+        updateGroups();
+      };
+      const renderConfigEditor=()=>{
+        if(!inspectionDraft)return;
+        const policy=inspectionDraft.query_policy;
+        document.getElementById('inspection-config-summary').textContent=`${inspectionDraft.items.length} 个检查项 · 配置版本 ${String(inspectionRevision || '未保存').slice(0,12)}`;
+        configEditor.innerHTML=`<div class="field-grid"><div><label for="config-month-source">月报/日报月份</label><select id="config-month-source">${choices({current_month:'当前月（默认）',task_month:'任务周期月份',fixed:'固定月份'},policy.month_source)}</select></div><div><label for="config-fixed-month">固定月份</label><input id="config-fixed-month" placeholder="01 至 12" value="${esc(policy.fixed_month || '')}" ${policy.month_source==='fixed'?'':'disabled'}></div></div><p class="hint">年报只按年份；半年报按年份和 01/07；日报、月报与周报按年份和所选月份查询。查询范围不会替代正文有效期核验。</p>`+
+          inspectionDraft.items.map((item,index)=>`<div class="config-item"><div class="field-grid"><div><label>检查项 code<input aria-label="检查项 ${index+1} code" data-item="${index}" data-field="itemCode" value="${esc(item.itemCode)}"></label></div><div><label>检查项名称<input aria-label="检查项 ${index+1} 名称" data-item="${index}" data-field="name" value="${esc(item.name)}"></label></div></div><div class="field-grid"><label>业务处理器<select aria-label="检查项 ${index+1} 业务处理器" data-item="${index}" data-field="handler">${choices({stop_work_unload:'停工撤人与卸压',relief_effects:'解危效果检验'},item.handler)}</select></label><label class="complete"><input type="checkbox" data-item="${index}" data-field="enabled" ${item.enabled?'checked':''}>启用此检查项</label></div><p class="config-summary">涉及 ${item.materials.length} 类清单</p>`+
+            item.materials.map((m,mi)=>`<div class="config-material"><div class="field-grid"><label>清单类型<select data-item="${index}" data-material="${mi}" data-field="material_group" aria-label="清单 ${index+1}-${mi+1} 类型">${choices(groupNames,m.material_group)}</select></label><label>清单名称<input data-item="${index}" data-material="${mi}" data-field="name" aria-label="清单 ${index+1}-${mi+1} 名称" value="${esc(m.name)}"></label></div><label>OceanBase 清单 ID<input data-item="${index}" data-material="${mi}" data-field="file_name_id" aria-label="清单 ${index+1}-${mi+1} ID" value="${esc(m.file_name_id)}"></label><div class="field-grid"><label>清单上报周期<select data-item="${index}" data-material="${mi}" data-field="cadence" aria-label="清单 ${index+1}-${mi+1} 周期">${choices(cadenceNames,m.cadence)}</select></label><label>证据角色<select data-item="${index}" data-material="${mi}" data-field="role" aria-label="清单 ${index+1}-${mi+1} 角色">${choices({actual_record:'实际记录',requirement:'标准/设计要求',statement:'声明材料',regulation:'法规'},m.role)}</select></label></div><button class="remove" type="button" data-remove-material="${mi}" data-item="${index}">移除此清单</button></div>`).join('')+`<div class="config-actions"><button class="history-refresh" type="button" data-add-material="${index}">添加清单</button><button class="history-refresh" type="button" data-remove-item="${index}">移除此检查项</button></div></div>`).join('');
+        for(const control of configEditor.querySelectorAll('[data-field]')) control.addEventListener('input',()=>{
+          const item=inspectionDraft.items[Number(control.dataset.item)];
+          const target=control.dataset.material===undefined?item:item.materials[Number(control.dataset.material)];
+          target[control.dataset.field]=control.type==='checkbox'?control.checked:control.value;syncConfigJson();
+        });
+        for(const name of ['month']){
+          document.getElementById(`config-${name}-source`).addEventListener('change',(event)=>{policy[`${name}_source`]=event.target.value;policy[`fixed_${name}`]=event.target.value==='fixed'?'01':null;syncConfigJson();renderConfigEditor();});
+          document.getElementById(`config-fixed-${name}`).addEventListener('input',(event)=>{policy[`fixed_${name}`]=event.target.value;syncConfigJson();});
+        }
+        for(const button of configEditor.querySelectorAll('[data-remove-material]'))button.addEventListener('click',()=>{inspectionDraft.items[Number(button.dataset.item)].materials.splice(Number(button.dataset.removeMaterial),1);syncConfigJson();renderConfigEditor();});
+        for(const button of configEditor.querySelectorAll('[data-remove-item]'))button.addEventListener('click',()=>{inspectionDraft.items.splice(Number(button.dataset.removeItem),1);syncConfigJson();renderConfigEditor();});
+        for(const button of configEditor.querySelectorAll('[data-add-material]'))button.addEventListener('click',()=>{
+          const item=inspectionDraft.items[Number(button.dataset.addMaterial)];
+          const group=Object.keys(groupNames).find(g=>!item.materials.some(m=>m.material_group===g));
+          if(!group){configState.textContent='该项已包含所有支持清单类型';return;}
+          item.materials.push({material_group:group,name:groupNames[group],file_name_id:'REPLACE_FILE_ID',role:['threshold','design','workface_risk','coal_risk'].includes(group)?'requirement':'actual_record',cadence:['threshold','design','workface_risk','coal_risk'].includes(group)?'annual':'daily'});syncConfigJson();renderConfigEditor();
+        });
+      };
+      const loadInspectionConfig=async()=>{
+        try{
+          const body=await requestJson('/v1/debug/inspection-config');inspectionDraft=body.config;inspectionRevision=body.revision;syncConfigJson();renderConfigEditor();renderConfiguredItems(inspectionDraft);debugTaskSubmit.disabled=false;submit.disabled=false;configState.textContent='已载入当前配置；保存后新任务生效。';
+        }catch(error){configState.textContent=`配置未载入：${error.message}。请重新载入后再提交。`;debugTaskSubmit.disabled=true;submit.disabled=true;}
+      };
+      document.getElementById('config-reload').addEventListener('click',loadInspectionConfig);
+      document.getElementById('config-apply-json').addEventListener('click',()=>{try{const draft=JSON.parse(configJson.value);if(!Array.isArray(draft.items)||!draft.query_policy||draft.items.some(item=>!item||!Array.isArray(item.materials)))throw new Error('需要 items、materials 和 query_policy');inspectionDraft=draft;renderConfigEditor();configState.textContent='JSON 已应用，点击保存完成校验。';}catch(error){configState.textContent=`JSON 无法应用：${error.message}`;}});
+      document.getElementById('config-add-item').addEventListener('click',()=>{
+        if(!inspectionDraft)return;
+        const template=inspectionDraft.items[0] || {handler:'stop_work_unload',materials:[]};
+        let suffix=inspectionDraft.items.length+1;while(inspectionDraft.items.some(i=>i.itemCode===`inspection_${suffix}`))suffix++;
+        inspectionDraft.items.push({...JSON.parse(JSON.stringify(template)),itemCode:`inspection_${suffix}`,name:'新检查项配置',enabled:true,name_aliases:[]});syncConfigJson();renderConfigEditor();
+      });
+      document.getElementById('config-save').addEventListener('click',async()=>{
+        if(!inspectionDraft)return;
+        const button=document.getElementById('config-save');button.disabled=true;configState.textContent='正在保存配置…';
+        try{const body=await requestJson('/v1/debug/inspection-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:inspectionDraft,expectedRevision:inspectionRevision})});inspectionDraft=body.config;inspectionRevision=body.revision;syncConfigJson();renderConfigEditor();renderConfiguredItems(inspectionDraft);configState.textContent='配置已保存，新任务生效；已有任务继续使用受理时配置。';}
+        catch(error){configState.textContent=`保存失败：${error.message}`;}finally{button.disabled=false;}
+      });
+      let historyOffset=0, historyRequest=0, selectedHistoryId=null;
+      const statusNames={queued:'排队中',running:'执行中',paused:'已暂停',completed:'已结束',failed:'执行失败',pass:'通过',no_pass:'不通过',pending:'待补证',unverifiable:'无法核验'};
+      const loadHistory = async () => {
+        const requestId=++historyRequest;
+        const params=new URLSearchParams({limit:'20',offset:String(historyOffset)});
+        const mine=document.getElementById('history-mine').value.trim();
+        const cycle=document.getElementById('history-cycle').value.trim();
+        if(mine)params.set('mine_code',mine);
+        if(cycle)params.set('check_cycle',cycle);
+        try {
+          const body=await requestJson(`/v1/debug/executions?${params}`);
+          if(requestId!==historyRequest)return;
+          document.getElementById('history-count').textContent=`共 ${body.total} 条 · 第 ${Math.floor(body.offset/20)+1} 页`;
+          document.getElementById('history-prev').disabled=body.offset===0;
+          document.getElementById('history-next').disabled=!body.has_more;
+          if(!body.records?.length){historyList.innerHTML='<p class="history-empty">暂无符合条件的任务记录</p>';return;}
+          historyList.innerHTML=body.records.map((record)=>{
+            const when=new Date(record.created*1000).toLocaleString('zh-CN',{hour12:false});
+            const outcomes=record.items.map(i=>`${i.item_code}：${statusNames[i.result_status || i.execution_state] || i.execution_state}`).join('；');
+            return `<button class="history-item" type="button" aria-pressed="${record.record_id===selectedHistoryId}" data-record-id="${esc(record.record_id)}"><strong>${esc(record.mine_code)} · ${esc(record.check_cycle)} · ${esc(statusNames[record.execution_state] || record.execution_state)}</strong><span>${esc(outcomes)}</span><small>${esc(when)} · ${record.completed_count}/${record.item_count} 项已结束</small></button>`;
+          }).join('');
+          historyList.querySelectorAll('.history-item').forEach((button)=>button.addEventListener('click',async()=>{
+            const record=body.records.find(item=>item.record_id===button.dataset.recordId); if(!record)return;
+            selectedHistoryId=record.record_id;
+            historyList.querySelectorAll('.history-item').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));
+            const owner={sourceSystem:record.source_system,mineCode:record.mine_code,environment:record.environment};
+            form.elements.source.value=owner.sourceSystem;form.elements.mine.value=owner.mineCode;form.elements.environment.value=owner.environment;
+            form.elements.cycle.value=record.check_cycle;
+            document.getElementById('run-ids').value=record.items.map(item=>item.run_id).join('\n');
+            document.getElementById('bundle-info').textContent=`历史任务 · ${record.mine_code} · ${record.check_cycle} · ${record.record_id}`;
+            const token=++generation;submit.disabled=true;lookup.disabled=true;debugTaskSubmit.disabled=true;setState('正在载入任务执行记录…');
+            try {await waitForRuns({items:record.items},owner,token);}
+            catch(error){if(token===generation)setState(error.message,true);}
+            finally{if(token===generation){submit.disabled=false;lookup.disabled=false;debugTaskSubmit.disabled=false;}}
+          }));
+        } catch(error){if(requestId===historyRequest)historyList.innerHTML=`<p class="history-empty">记录暂不可用：${esc(error.message)}，可点击刷新重试。</p>`;}
+      };
+      const selectedItems = () => [...form.querySelectorAll('input[name="item"]:checked')].map((input) => input.value);
+      const addressLines = (groupId) => document.getElementById(`addresses-${groupId}`).value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const updateGroups = () => {
+        const selected = selectedItems();
+        let total=0, groups=0;
+        for (const group of materialGroups) {
+          const files=groupFiles.get(group.group_id) || [];
+          const count=files.length + addressLines(group.group_id).length;
+          const element=document.getElementById(`group-${group.group_id}`);
+          element.hidden=!count && !group.items.some((item) => selected.includes(item));
+          element.querySelector('.group-count').textContent=count ? `${count} 份附件` : '未添加';
+          if (count) { total+=count; groups+=1; }
+        }
+        document.getElementById('bundle-summary').textContent=total ? `已添加 ${groups} 类资料，共 ${total} 份附件` : '尚未添加附件；无需所有分类都齐备才可调试';
+      };
+      const renderFiles = (groupId) => {
+        const area=document.getElementById(`files-${groupId}`);
+        area.replaceChildren();
+        (groupFiles.get(groupId) || []).forEach((file,index) => {
+          const row=document.createElement('div'); row.className='attachment-row';
+          const text=document.createElement('span'); text.textContent=`${file.name} · ${(file.size/1024).toFixed(1)} KB`;
+          const remove=document.createElement('button'); remove.type='button'; remove.className='remove'; remove.textContent='移除'; remove.setAttribute('aria-label',`移除 ${file.name}`);
+          remove.addEventListener('click',() => { groupFiles.get(groupId).splice(index,1); renderFiles(groupId); updateGroups(); });
+          row.append(text,remove); area.append(row);
+        });
+      };
+      const setMode = () => {
+        const bundle=inputMode.value==='bundle';
+        for (const [id,active] of [['bundle-fields',bundle],['manifest-fields',!bundle]]) { const fieldset=document.getElementById(id); fieldset.hidden=!active; fieldset.disabled=!active; }
+      };
+      const setDates = () => {
+        const match=/^(\d{4})-(\d{2})$/.exec(form.elements.cycle.value.trim());
+        if (!match || +match[2]<1 || +match[2]>12) return;
+        document.getElementById('period-start').value=`${match[1]}-${match[2]}-01`;
+        document.getElementById('period-end').value=`${match[1]}-${match[2]}-${new Date(+match[1],+match[2],0).getDate()}`;
+      };
+      inputMode.addEventListener('change',setMode);
+      form.elements.cycle.addEventListener('change',setDates);
+      form.querySelectorAll('input[name="item"]').forEach((input) => input.addEventListener('change',updateGroups));
+      setDates(); setMode();
+      const loadGroups = async () => {
+        try {
+          const body=await requestJson('/v1/debug/material-groups');
+          materialGroups=body.groups;
+          groupContainer.innerHTML=materialGroups.map((group) => `<details class="material-group" id="group-${esc(group.group_id)}" ${group.group_id==='prevention_daily' ? 'open' : ''}><summary><span class="group-title">${esc(group.title)}</span><span class="group-count">未添加</span></summary><p class="hint">${esc(group.description || '')}</p><label for="upload-${esc(group.group_id)}">上传${esc(group.title)}（可多选、可追加）</label><input class="file-picker" id="upload-${esc(group.group_id)}" type="file" multiple accept=".pdf,.docx,.xlsx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"><div id="files-${esc(group.group_id)}"></div><label for="addresses-${esc(group.group_id)}">${esc(group.title)}附件地址（每行一份）</label><textarea id="addresses-${esc(group.group_id)}" rows="3" spellcheck="false" placeholder="D:\\资料\\日报-01.xlsx&#10;http://附件服务/日报-02.pdf"></textarea><p class="hint">链接无文件后缀时写：文件名.pdf | https://附件地址。地址由运行本服务的电脑读取。</p></details>`).join('');
+          for (const group of materialGroups) {
+            groupFiles.set(group.group_id,[]);
+            const input=document.getElementById(`upload-${group.group_id}`);
+            input.addEventListener('change',() => {
+              const files=groupFiles.get(group.group_id);
+              for (const file of input.files) files.push(file);
+              input.value=''; renderFiles(group.group_id); updateGroups();
+            });
+            document.getElementById(`addresses-${group.group_id}`).addEventListener('input',updateGroups);
+          }
+          updateGroups();
+        } catch (error) {
+          groupContainer.replaceChildren();
+          const message=document.createElement('p'); message.className='state error'; message.textContent=`资料清单未载入：${error.message}。请重启新版 API 后刷新页面。`;
+          groupContainer.append(message);
+        }
+      };
+      loadGroups();
+      loadInspectionConfig();
+      loadHistory();
+      historyRefresh.addEventListener('click',()=>{historyOffset=0;loadHistory();});
+      document.getElementById('history-prev').addEventListener('click',()=>{historyOffset=Math.max(0,historyOffset-20);loadHistory();});
+      document.getElementById('history-next').addEventListener('click',()=>{historyOffset+=20;loadHistory();});
+      for(const id of ['history-mine','history-cycle']) document.getElementById(id).addEventListener('change',()=>{historyOffset=0;loadHistory();});
+      setInterval(()=>{if(!document.hidden)loadHistory();},10000);
+      const loadRunsFromUrl = async () => {
+        const query = new URLSearchParams(location.search);
+        const ids = [...new Set((query.get('run_ids') || '').split(/[\s,，]+/).filter(Boolean))];
+        const source = query.get('source_system');
+        const mine = query.get('mine_code');
+        const environment = query.get('environment') || 'local';
+        if (!ids.length || ids.length > 10 || !source || !mine) return;
+        form.elements.source.value=source; form.elements.mine.value=mine; form.elements.environment.value=environment;
+        document.getElementById('run-ids').value=ids.join('\n');
+        const token=++generation; submit.disabled=true; lookup.disabled=true; setState('正在载入已有运行…');
+        try { await waitForRuns({items:ids.map((run_id) => ({run_id}))}, {sourceSystem:source,mineCode:mine,environment}, token); }
+        catch (error) { if (token===generation) setState(error.message,true); }
+        finally { if (token===generation) { submit.disabled=false; lookup.disabled=false; stop.hidden=true; } }
+      };
+      window.addEventListener('DOMContentLoaded', loadRunsFromUrl);
+      const fileData = (file) => new Promise((resolve,reject) => {
+        const reader=new FileReader(); reader.onload=() => resolve(String(reader.result).split(',')[1]); reader.onerror=() => reject(new Error(`读取附件失败：${file.name}`)); reader.readAsDataURL(file);
+      });
+      const bundleAttachments = async () => {
+        if (!materialGroups.length) throw new Error('请先载入业务资料清单');
+        const attachments=[]; let totalSize=0;
+        for (const group of materialGroups) {
+          for (const file of [...groupFiles.get(group.group_id)]) {
+            if (file.size>50*1024*1024) throw new Error(`单份附件不能超过 50 MiB：${file.name}`);
+            totalSize+=file.size;
+            if (totalSize>200*1024*1024) throw new Error('本次上传附件总大小不能超过 200 MiB');
+            attachments.push({group_id:group.group_id,kind:'file',name:file.name,file});
+          }
+          for (const line of addressLines(group.group_id)) {
+            const divider=line.indexOf('|');
+            const name=divider>=0 ? line.slice(0,divider).trim() : undefined;
+            const address=(divider>=0 ? line.slice(divider+1).trim() : line).replace(/^"(.*)"$/,'$1');
+            attachments.push(/^https?:\/\//i.test(address) ? {group_id:group.group_id,kind:'url',url:address,...(name ? {name} : {})} : {group_id:group.group_id,kind:'local_path',path:address,...(name ? {name} : {})});
+          }
+        }
+        if (!attachments.length) throw new Error('请至少在一类业务清单中添加附件或地址');
+        if (attachments.length>1000) throw new Error('一次最多提交 1000 份附件');
+        // Read files sequentially to avoid simultaneous FileReader buffers for a full bundle.
+        for (const attachment of attachments) if (attachment.file) { attachment.data=await fileData(attachment.file); delete attachment.file; }
+        return attachments;
+      };
+      const textStatus = (run) => run?.result?.status || run?.execution_state || 'unknown';
+      const evidenceCount = (run) => {
+        const result = run?.result || {};
+        return (result.event_evidence_chains || []).reduce((sum, chain) => sum + (chain.steps || []).length, 0);
+      };
+      const render = (runs) => {
+        const openDetails = new Set([...results.querySelectorAll('details[open]')].map((detail) => detail.id));
+        currentRuns = runs;
+        download.hidden = !runs.length;
+        results.className = '';
+        results.innerHTML = runs.map((run) => {
+          const spec = run.spec || {};
+          const result = run.result || {};
+          const status = textStatus(run);
+          const coverage = result.rule_coverage || {};
+          const gaps = result.coverage_gaps || [];
+          const factChains = result.fact_evidence_chains || [];
+          const dailyIssues = result.daily_issues || [];
+          const dailyEpisodes = result.daily_episodes || [];
+          const dailyClues = result.daily_clues || [];
+          const description = result.description || (run.execution_state === 'queued' ? '等待 Worker 领取任务' : run.execution_state === 'running' ? 'Worker 正在解析文件并检查' : '');
+          const chains = result.event_evidence_chains || [];
+          const detail = (key, title, value) => `<details id="${esc(run.run_id)}-${key}"><summary>${title}</summary><pre>${esc(JSON.stringify(value, null, 2))}</pre></details>`;
+          const detailHtml = (key, title, html) => `<details id="${esc(run.run_id)}-${key}"><summary>${title}</summary><div class="evidence-list">${html}</div></details>`;
+          const latest = run.progress_events?.length ? run.progress_events[run.progress_events.length - 1] : null;
+          const progressText = latest ? `${latest.stage || '运行'} / ${latest.event || '更新'}${latest.file_id ? ` · ${latest.file_id}` : ''}${latest.page ? ` · 第 ${latest.page} 页` : ''}` : '暂无进度事件';
+          const filesInScope = [...(run.snapshot?.files || [])];
+          const downloadedIds=new Set(filesInScope.map(f=>f.file_id));
+          const failures=new Map((run.snapshot?.attachment_acquisition?.failures || []).map(f=>[f.attachment_id,f]));
+          for(const row of (run.snapshot?.acquisition?.rows || run.acquisition?.rows || [])) {
+            if(!downloadedIds.has(row.attachment_id)) filesInScope.push({file_id:row.attachment_id,original_name:row.attachment_name,material_group:row.material_group,role:row.role,source_metadata:{attachment_url:row.attachment_url},status:failures.has(row.attachment_id)?'下载失败':'等待处理',error:failures.get(row.attachment_id)?.error});
+          }
+          const provenance = [...(result.fact_evidence_chains || []), ...(result.event_evidence_chains || [])];
+          const originalEvidence = run.snapshot?.evidence || [];
+          const originalRows = originalEvidence.map((e) => `<div class="evidence-row"><strong>${esc(e.original_name || e.file_id)} · ${esc(JSON.stringify(e.locator || {}))}</strong><span>${esc(e.evidence_id)} · ${esc(e.source_role)}</span><small>${esc(e.text)}</small></div>`).join('');
+          const fileRows = filesInScope.map((file) => `<div class="evidence-row"><strong>${esc(file.original_name || file.source_path || file.file_id)}</strong><span>${esc(file.material_group || file.role || '资料')} · ${esc(file.content_hash || '未生成哈希')}</span><small>${esc(file.file_id)} · ${esc(file.status || '已登记')}</small>${file.error ? `<small class="state error">${esc(file.error)}</small>` : ''}</div>`).join('');
+          const provenanceRows = provenance.flatMap((chain) => (chain.steps || [chain]).map((step) => (step.sources || []).map((source) => `<div class="evidence-row"><strong>${esc(step.code || step.kind || '证据')}</strong><span>${esc(source.original_name || source.file_id || '文件')} · ${esc(JSON.stringify(source.locator || {}))}</span><small>${esc(source.quote || '')}</small></div>`).join(''))).join('');
+          return `<article class="result"><div class="result-head"><strong>${esc(spec.item_code || '检查项')} · ${esc(run.run_id)}</strong><span class="badge ${esc(status)}">${esc(status)}</span></div><div class="result-body"><div class="meta"><div>执行状态<b>${esc(run.execution_state || '待查询')}</b></div><div>事实 / 事件步骤<b>${factChains.length} / ${evidenceCount(run)}</b></div><div>线索 / 日报问题<b>${dailyClues.length} / ${dailyIssues.length}</b></div></div>${description ? `<div class="notice">${esc(description)}</div>` : ''}<div class="notice">当前进度：${esc(progressText)}</div>${run.query_error ? `<p class="state error">${esc(run.query_error)}</p>` : ''}${filesInScope.length ? detailHtml('files',`本次检查涉及文件（${filesInScope.length}）`,fileRows) : ''}${provenance.length ? detailHtml('provenance',`证据溯源（${provenance.length} 条链）`,provenanceRows) : ''}${originalEvidence.length ? detailHtml('original-evidence',`原文证据（${originalEvidence.length}）`,originalRows) : ''}${result.evidence_refs?.length ? detail('evidence-refs',`结果引用证据（${result.evidence_refs.length}）`,result.evidence_refs) : ''}${dailyClues.length ? detail('clues',`查看日报线索（${dailyClues.length}，含候选）`,dailyClues) : ''}${dailyIssues.length ? detail('daily',`查看日报问题（${dailyIssues.length}）`,dailyIssues) : ''}${dailyEpisodes.length ? detail('episodes',`查看连续周期汇总（${dailyEpisodes.length}）`,dailyEpisodes) : ''}${factChains.length ? detail('facts',`查看事实与原文来源（${factChains.length} 条）`,factChains) : ''}${factChains.length && !chains.length ? '<p class="hint">已保留明示事实；缺少已确认的危险触发事件或关联依据，尚不能组成事件检查链。</p>' : ''}${gaps.length ? detail('gaps', `查看证据缺口（${gaps.length}）`, gaps) : ''}${result.findings?.length ? detail('findings','查看不符合项',result.findings) : ''}${result.rule_coverage ? detail('coverage','查看规则覆盖情况',coverage) : ''}${chains.length ? detail('chains',`查看事件证据链（${chains.length} 个事件）`,chains) : ''}${run.progress_events?.length ? detail('progress',`查看最近进度事件（${run.progress_events.length}）`,run.progress_events) : ''}${detail('json','查看完整结果 JSON',run)}</div></article>`;
+        }).join('');
+        results.querySelectorAll('details').forEach((detail) => { detail.open=openDetails.has(detail.id); });
+      };
+      const getRun = async (runId, owner) => {
+        const params = new URLSearchParams({source_system: owner.sourceSystem, mine_code: owner.mineCode, environment: owner.environment});
+        return requestJson(`/v1/runs/${encodeURIComponent(runId)}?${params}`);
+      };
+      const progressHistory = new Map();
+      const getProgress = async (runId, owner) => {
+        const saved = progressHistory.get(runId) || {after:0, events:[]};
+        let page;
+        do {
+          const params = new URLSearchParams({source_system: owner.sourceSystem, mine_code: owner.mineCode, environment: owner.environment, after:String(saved.after), limit:'500'});
+          page = await requestJson(`/v1/runs/${encodeURIComponent(runId)}/progress?${params}`);
+          saved.events.push(...(page.events || [])); saved.after=page.next_after;
+        } while (page.has_more);
+        saved.events=saved.events.slice(-100);
+        progressHistory.set(runId,saved);
+        return {events:saved.events};
+      };
+      const waitForRuns = async (accepted, owner, token) => {
+        const runIds = accepted.items.map((item) => item.run_id);
+        let runs = accepted.items.map((item) => ({run_id:item.run_id, execution_state:item.execution_state, spec:{item_code:item.item_code}}));
+        const started = Date.now();
+        stop.hidden = false;
+        for (let attempt = 0; attempt < 300 && token === generation; attempt += 1) {
+          const replies = await Promise.allSettled(runIds.map(async (id) => {
+            const [run, progress] = await Promise.all([getRun(id, owner), getProgress(id, owner)]);
+            return {...run, progress_events: progress.events || [], progress_summary: progress.summary || run.progress_summary};
+          }));
+          if (token !== generation) return;
+          runs = replies.map((reply, index) => reply.status === 'fulfilled' ? reply.value : {...runs[index], query_error:reply.reason.message});
+          render(runs);
+          const errors = runs.filter((run) => run.query_error).length;
+          const done = runs.every((run) => run.query_error || ['completed','failed'].includes(run.execution_state));
+          const queued = runs.some((run) => run.execution_state === 'queued');
+          const elapsed = Math.floor((Date.now() - started) / 1000);
+          setState(done ? (errors ? '部分查询失败，可按运行编号重新查询' : '检查结束，请查看各项结论') : `跟踪中 · ${elapsed}s${queued && elapsed > 10 ? ' · 排队中，请确认 Worker 已启动' : ''}`, errors > 0);
+          if (done) { stop.hidden = true; loadHistory(); return; }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        if (token === generation) { stop.hidden=true; setState('自动刷新已暂停；任务继续执行，可按运行编号重新查询'); }
+      };
+      document.getElementById('apply-json').addEventListener('click', () => {
+        try {
+          const body = JSON.parse(document.getElementById('request-json').value);
+          if (!body || typeof body !== 'object' || !Array.isArray(body.items) || typeof body.scope?.manifest !== 'string') throw new Error('需要包含 scope.manifest 和 items 的检查请求');
+          const fields = {manifest:body.scope.manifest, source:body.sourceSystem, mine:body.mineCode, environment:body.environment || 'local', cycle:body.checkCycle};
+          if (Object.values(fields).some((value) => typeof value !== 'string' || !value.trim())) throw new Error('请求缺少来源、矿井或周期');
+          if (body.ruleVersion && body.ruleVersion !== currentRuleVersion) throw new Error('请求规则版本与当前服务不同，请核对');
+          const codes = body.items.map((item) => item.itemCode);
+          if (!codes.length || codes.some(code => !supportedInspectionItems.some(item=>item.itemCode===code))) throw new Error('检查项未在当前配置中启用');
+          Object.entries(fields).forEach(([key,value]) => { form.elements[key].value=value; });
+          form.querySelectorAll('input[name="item"]').forEach((input) => { input.checked=codes.includes(input.value); });
+          inputMode.value='manifest'; setMode(); updateGroups();
+          setState('已填入表单，回调模式固定为 none；核对后提交检查');
+        } catch (error) { setState(`填充失败：${error.message}`,true); }
+      });
+      stop.addEventListener('click', () => { generation += 1; stop.hidden=true; submit.disabled=false; lookup.disabled=false; debugTaskSubmit.disabled=false; setState('已停止刷新；后台任务继续执行'); });
+      download.addEventListener('click', () => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify({items:currentRuns},null,2)],{type:'application/json'}));
+        const link = document.createElement('a'); link.href=url; link.download='compliance-debug-results.json'; link.click();
+        setTimeout(() => URL.revokeObjectURL(url),1000);
+      });
+      debugTaskSubmit.addEventListener('click', async () => {
+        const items=[...document.querySelectorAll('#debug-configured-items input:checked')].map(input=>({itemCode:input.dataset.code || input.value}));
+        const mineId=document.getElementById('debug-mine-id').value.trim();
+        const checkCycle=document.getElementById('debug-cycle').value.trim();
+        const manifestPath=document.getElementById('debug-manifest').value.trim();
+        if (!mineId || (debugSource.value==='manifest' && !manifestPath) || !items.length || !/^\d{4}-(0[1-9]|1[0-2])$/.test(checkCycle)) { debugTaskState.textContent='请填写矿井、周期、manifest 路径并选择检查项'; return; }
+        const owner=ownerFromForm();
+        owner.mineCode=mineId;
+        const body={mineId,status:document.getElementById('debug-status').value,checkCycle,items,manifestPath,dataSource:debugSource.value,
+          resultCallbackUrl:document.getElementById('debug-callback').value.trim()};
+        const token=++generation;
+        debugTaskSubmit.disabled=true; submit.disabled=true; lookup.disabled=true;
+        debugTaskState.textContent='正在模拟接收任务；真实回调已禁用…';
+        try {
+          document.getElementById('debug-task-json').value=JSON.stringify(body,null,2);
+          const accepted=await requestJson('/v1/debug/upstream/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+          historyOffset=0;selectedHistoryId=accepted.task_key || null;loadHistory();
+          Object.assign(owner,accepted.owner || {});
+          form.elements.source.value=owner.sourceSystem; form.elements.environment.value=owner.environment;
+          accepted.items.forEach((entry,index)=>{entry.item_code=entry.item_code || items[index].itemCode;});
+          form.elements.mine.value=mineId; form.elements.cycle.value=checkCycle;
+          document.getElementById('run-ids').value=accepted.items.map((entry)=>entry.run_id).join('\n');
+          document.getElementById('bundle-info').textContent=`模拟任务已接收 · callbackMode=none · ${debugSource.value==='oceanbase' ? 'OceanBase 查询' : manifestPath}`;
+          debugTaskState.textContent='任务已接收，正在本地执行并跟踪结果；不发送回调。';
+          await waitForRuns(accepted,owner,token);
+          if(token===generation) debugTaskState.textContent='结果已显示在右侧；可展开文件清单和原文证据。';
+        } catch(error) { debugTaskState.textContent=error.message; setState(error.message,true); }
+        finally { if(token===generation){ debugTaskSubmit.disabled=false; submit.disabled=false; lookup.disabled=false; stop.hidden=true; } }
+      });
+      document.getElementById('debug-apply-json').addEventListener('click',()=>{
+        try {
+          const task=JSON.parse(document.getElementById('debug-task-json').value);
+          if(typeof task.mineId!=='string' || typeof task.checkCycle!=='string' || !Array.isArray(task.items)) throw new Error('需要 mineId、checkCycle 和 items');
+          if(task.status && task.status!=='running') throw new Error('本地模拟入口当前支持 running');
+          const codes=task.items.map(i=>i.itemCode);
+          if(!codes.length || codes.some(c=>!supportedInspectionItems.some(i=>i.itemCode===c))) throw new Error('检查项未在当前配置中启用');
+          document.getElementById('debug-mine-id').value=task.mineId;
+          document.getElementById('debug-cycle').value=task.checkCycle;
+          document.querySelectorAll('#debug-configured-items input').forEach(input=>{input.checked=codes.includes(input.dataset.code || input.value);});
+          if(task.manifestPath) document.getElementById('debug-manifest').value=task.manifestPath;
+          if(task.resultCallbackUrl) document.getElementById('debug-callback').value=task.resultCallbackUrl;
+          if(task.sourceSystem) form.elements.source.value=task.sourceSystem;
+          if(task.environment) form.elements.environment.value=task.environment;
+          debugTaskState.textContent='已填入任务参数。核对取数方式后点击执行；回调已禁用。';
+        } catch(error) {debugTaskState.textContent=error.message;}
+      });
+      lookup.addEventListener('click', async () => {
+        const ids=[...new Set(document.getElementById('run-ids').value.split(/[\s,，]+/).filter(Boolean))];
+        const owner=ownerFromForm();
+        if (!ids.length || ids.length > 10 || Object.values(owner).some((value) => !value)) { setState('请填写归属信息以及 1–10 个运行编号',true); return; }
+        const token=++generation; submit.disabled=true; lookup.disabled=true; document.getElementById('bundle-info').textContent='';
+        try { await waitForRuns({items:ids.map((run_id) => ({run_id}))}, owner, token); }
+        catch (error) { if (token===generation) setState(error.message,true); }
+        finally { if (token===generation) { submit.disabled=false; lookup.disabled=false; stop.hidden=true; } }
+      });
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const items = selectedItems().map((itemCode) => ({itemCode}));
+        if (!items.length) { state.textContent = '至少选择一个检查项'; state.className = 'state error'; return; }
+        const data = new FormData(form);
+        const owner = ownerFromForm();
+        const bundle=inputMode.value==='bundle';
+        const cycle=data.get('cycle').trim();
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(cycle)) { setState('检查周期必须使用 YYYY-MM，例如 2026-10',true); return; }
+        if (bundle && (document.getElementById('period-start').value.slice(0,7)!==cycle || document.getElementById('period-end').value.slice(0,7)!==cycle || document.getElementById('period-start').value>document.getElementById('period-end').value)) { setState('资料起止日期必须在检查周期内且起始日期不晚于截止日期',true); return; }
+        const body = {...owner, checkCycle:data.get('cycle').trim(), ruleVersion:currentRuleVersion, items};
+        if (bundle) { body.period={start:document.getElementById('period-start').value,end:document.getElementById('period-end').value}; body.source_complete=document.getElementById('source-complete').checked; }
+        else { body.scope={manifest:data.get('manifest').trim()}; body.callbackMode='none'; }
+        const token=++generation;
+        submit.disabled = true; lookup.disabled=true; setState(bundle ? '正在整理附件…' : '正在受理…');
+        try {
+          if (bundle) { body.attachments=await bundleAttachments(); setState('正在保存附件并受理检查…'); }
+          const accepted = await requestJson(bundle ? '/v1/debug/bundles' : '/v1/manual/runs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),timeoutMs:bundle ? 600000 : 20000});
+          if (token!==generation) return;
+          historyOffset=0;loadHistory();
+          accepted.items.forEach((entry,index) => { entry.item_code=items[index].itemCode; });
+          document.getElementById('run-ids').value=accepted.items.map((entry) => entry.run_id).join('\n');
+          document.getElementById('bundle-info').textContent=accepted.manifest_path ? `资料清单已保存 · ${owner.mineCode} · ${body.period?.start || cycle} 至 ${body.period?.end || cycle} · ${accepted.attachments?.length || 0} 份附件` : `使用已有清单：${body.scope.manifest}`;
+          render(accepted.items.map((entry) => ({...entry,spec:{item_code:entry.item_code}})));
+          await waitForRuns(accepted, owner, token);
+        } catch (error) { if (token===generation) setState(error.message,true); }
+        finally { if (token===generation) { submit.disabled = false; lookup.disabled=false; stop.hidden=true; } }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "query_policy": {
+    "month_source": "task_month"
+  },
+  "items": [
+    {
+      "itemCode": "stop_work_unload",
+      "name": "冲击危险停工撤人与卸压",
+      "handler": "stop_work_unload",
+      "enabled": true,
+      "name_aliases": [
+        "停工撤人与卸压"
+      ],
+      "materials": [
+        {
+          "material_group": "prevention_daily",
+          "name": "防冲工作日报表",
+          "file_name_id": "rock_ledger_1k8hqc4_rpt_wh5nwe",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "dispatch_daily",
+          "name": "调度日报",
+          "file_name_id": "base_base_ledger_1falhnq_x_smfptn",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "analysis",
+          "name": "生产矿长（总工程师）日分析记录",
+          "file_name_id": "rock_ledger_1k8hqc4_rec_5sdl97",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "release",
+          "name": "生产组织通知单",
+          "file_name_id": "rock_ledger_1k8hqc4_x_1t0mx6a",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "relief_acceptance",
+          "name": "防冲钻孔验收记录",
+          "file_name_id": "rock_ledger_1k8hqc4_rec_axez36",
+          "role": "actual_record",
+          "cadence": "weekly"
+        },
+        {
+          "material_group": "threshold",
+          "name": "冲击危险性预警临界指标",
+          "file_name_id": "rock_rpt_181s4w6_x_jqiyc1",
+          "role": "requirement",
+          "cadence": "annual"
+        },
+        {
+          "material_group": "design",
+          "name": "防冲设计",
+          "file_name_id": "rock_x_iverp1_x_1t8xner",
+          "role": "requirement",
+          "cadence": "annual"
+        },
+        {
+          "material_group": "workface_risk",
+          "name": "工作面危险性评价",
+          "file_name_id": "rock_rpt_181s4w6_mining_rpt_1vaqrs5",
+          "role": "requirement",
+          "cadence": "annual"
+        },
+        {
+          "material_group": "coal_risk",
+          "name": "煤层危险性评价",
+          "file_name_id": "rock_rpt_181s4w6_rpt_1f3n8vh",
+          "role": "requirement",
+          "cadence": "annual"
+        }
+      ]
+    },
+    {
+      "itemCode": "relief_effects",
+      "name": "冲击地压解危效果检验",
+      "handler": "relief_effects",
+      "enabled": true,
+      "name_aliases": [
+        "解危效果检验"
+      ],
+      "materials": [
+        {
+          "material_group": "prevention_daily",
+          "name": "防冲工作日报表",
+          "file_name_id": "rock_ledger_1k8hqc4_rpt_wh5nwe",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "dispatch_daily",
+          "name": "调度日报",
+          "file_name_id": "base_base_ledger_1falhnq_x_smfptn",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "analysis",
+          "name": "生产矿长（总工程师）日分析记录",
+          "file_name_id": "rock_ledger_1k8hqc4_rec_5sdl97",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "release",
+          "name": "生产组织通知单",
+          "file_name_id": "rock_ledger_1k8hqc4_x_1t0mx6a",
+          "role": "actual_record",
+          "cadence": "daily"
+        },
+        {
+          "material_group": "relief_acceptance",
+          "name": "防冲钻孔验收记录",
+          "file_name_id": "rock_ledger_1k8hqc4_rec_axez36",
+          "role": "actual_record",
+          "cadence": "weekly"
+        },
+        {
+          "material_group": "threshold",
+          "name": "冲击危险性预警临界指标",
+          "file_name_id": "rock_rpt_181s4w6_x_jqiyc1",
+          "role": "requirement",
+          "cadence": "annual"
+        },
+        {
+          "material_group": "design",
+          "name": "防冲设计",
+          "file_name_id": "rock_x_iverp1_x_1t8xner",
+          "role": "requirement",
+          "cadence": "annual"
+        },
+        {
+          "material_group": "workface_risk",
+          "name": "工作面危险性评价",
+          "file_name_id": "rock_rpt_181s4w6_mining_rpt_1vaqrs5",
+          "role": "requirement",
+          "cadence": "annual"
+        },
+        {
+          "material_group": "coal_risk",
+          "name": "煤层危险性评价",
+          "file_name_id": "rock_rpt_181s4w6_rpt_1f3n8vh",
+          "role": "requirement",
+          "cadence": "annual"
+        }
+      ]
+    }
+  ]
+}

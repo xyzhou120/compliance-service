@@ -1,0 +1,24 @@
+# Copy to config/models.local.toml; COMPLIANCE_MODEL_CONFIG can select another file.
+# Default disabled. Environment keys take priority over api_key in the local file.
+# Never commit models.local.toml or log the loaded settings dictionary.
+[ocr]
+enabled = false
+# multipart-http: POST <base_url>/ocr with a binary multipart field named file.
+# Expected response: {rec_texts:[...],rec_scores:[...],rec_polys:[...]}.
+# Optional alternative http-json: POST URL with {image_base64,mime_type};
+# response {text,blocks:[{text,bbox,confidence}]}.
+provider = "multipart-http"
+base_url = "http://127.0.0.1:7000"
+api_key_env = ""
+timeout_seconds = 30
+
+[vision]
+enabled = false
+provider = "openai-compatible"
+base_url = "http://127.0.0.1:8000/v1"
+model = "your-vision-model"
+api_key_env = "VISION_API_KEY"
+api_key = ""
+timeout_seconds = 60
+# Vision sends OpenAI chat/completions with an image_url data URL and asks for
+# {text,blocks:[{text,bbox}]}. All model output remains candidate evidence.

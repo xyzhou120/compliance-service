@@ -1,0 +1,583 @@
+"""Offline, deterministic checks; only cited execution facts prove execution.
+
+No result editing, OCR guessing, model call, or cross-event evidence borrowing is
+performed here. Insufficient evidence closes the current run as pending.
+"""
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+
+from .contracts import InvalidRequest, assert_snapshot_owner
+from .fixtures import result_base
+from .rulebook import DEFAULT_RULEBOOK_VERSION
+
+
+DETAILS_EFFECTIVE = date(2026, 9, 23)
+STANDARD_EFFECTIVE = date(2026, 7, 1)
+LAW_SOURCE = "《防治煤矿冲击地压细则》（矿安〔2026〕82号）"
+LAW_URL = "https://www.chinamine-safety.gov.cn/zfxxgk/fdzdgknr/tzgg/202607/t20260724_677906.shtml"
+
+
+def normalize_method(value):
+    """Known spelling aliases only; unfamiliar method names stay distinct."""
+    text = "".join(str(value or "").split()).lower()
+    return {"应力监测": "应力监测法", "微震监测": "微震监测法",
+            "钻屑": "钻屑法", "电磁辐射": "电磁辐射法"}.get(text, text)
+
+
+def _fields(fact):
+    return fact.get("fields", {})
+
+
+def _time(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        if len(value) == 10:
+            return date.fromisoformat(value)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _day(value):
+    value = _time(value)
+    return value.date() if isinstance(value, datetime) else value
+
+
+def _before(a, b):
+    """Whether a strictly precedes b; equal/overlapping timestamps are unknown."""
+    a, b = _time(a), _time(b)
+    if a is None or b is None:
+        return None
+    if isinstance(a, datetime) and isinstance(b, datetime):
+        try:
+            return a < b if a != b else None
+        except TypeError:
+            return None  # Mixing explicit and unspecified time zones is ambiguous.
+    ad = a.date() if isinstance(a, datetime) else a
+    bd = b.date() if isinstance(b, datetime) else b
+    return (ad < bd) if ad != bd else None
+
+
+def _inclusive_before(a, b):
+    """Inclusive boundary comparison, separate from a proven action sequence."""
+    first, second = _time(a), _time(b)
+    if isinstance(first, datetime) and isinstance(second, datetime):
+        try:
+            return first <= second
+        except TypeError:
+            return None
+    return _before(a, b)
+
+
+def _inside_observation(value, start, end):
+    """Date-only observation bounds include the entire named local date."""
+    value_time, lower, upper = _time(value), _time(start), _time(end)
+    if value_time is None or lower is None or upper is None:
+        return False
+    day = value_time.date() if isinstance(value_time, datetime) else value_time
+    begins = day >= lower if not isinstance(lower, datetime) else _inclusive_before(start, value) is True
+    ends = day <= upper if not isinstance(upper, datetime) else _inclusive_before(value, end) is True
+    return begins and ends
+
+
+def _effective_at(fields, when):
+    """A stated validity boundary is binding; date-only endpoints are inclusive."""
+    value, day = _time(when), _day(when)
+    if value is None:
+        return False
+    for name, lower in (("valid_from", True), ("valid_to", False)):
+        if fields.get(name) in (None, ""):
+            continue
+        bound = _time(fields[name])
+        if bound is None:
+            return False
+        if isinstance(bound, datetime):
+            comparison = _inclusive_before(fields[name], when) if lower else _inclusive_before(when, fields[name])
+            if comparison is not True:
+                return False
+        elif (day < bound if lower else day > bound):
+            return False
+    return True
+
+
+def _denial_covers(denial, event):
+    """A point-in-time negative is not presumed to remain true at another time."""
+    denied_time, event_time = _time(denial.get("time")), _time(event.get("time"))
+    if isinstance(denied_time, datetime) and isinstance(event_time, datetime) and denied_time == event_time:
+        return True
+    fields = _fields(denial)
+    start, end = fields.get("status_valid_from"), fields.get("status_valid_to")
+    return bool(start and end and _inside_observation(event.get("time"), start, end))
+
+
+def _number(value):
+    try:
+        value = Decimal(str(value))
+        return value if value.is_finite() else None
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _strict_before(a, b):
+    return _before(a, b) is True and _time(a) != _time(b)
+
+
+_UNITS = {
+    "mpa": ("pressure", "1"), "kpa": ("pressure", "0.001"), "pa": ("pressure", "0.000001"),
+    "j": ("energy", "1"), "kj": ("energy", "1000"),
+    "kg/m": ("drill_mass", "1"), "g/m": ("drill_mass", "0.001"),
+    "1": ("index", "1"), "无量纲": ("index", "1"), "%": ("index", "0.01"),
+    "m": ("length", "1"), "cm": ("length", "0.01"), "mm": ("length", "0.001"),
+    "mv": ("voltage", "1"), "v": ("voltage", "1000"),
+}
+
+
+def _quantity(fields):
+    value = _number(fields.get("value"))
+    unit = _UNITS.get(str(fields.get("unit", "")).strip().lower())
+    if value is None or unit is None:
+        return None
+    # A shared numeric unit must never make a drill-powder index into pressure.
+    method = normalize_method(fields.get("method"))
+    metric = str(fields.get("metric", ""))
+    if (method == "钻屑法" or "钻粉" in metric or "钻屑" in metric) and unit[0] == "pressure":
+        return None
+    return unit[0], value * Decimal(unit[1])
+
+
+def _point(fields):
+    return normalize_method(fields.get("method")), fields.get("metric"), fields.get("point")
+
+
+def _law(article):
+    return {"id": f"impact-details-2026-{article}", "source": LAW_SOURCE,
+            "article": f"第{article}条", "effective_date": "2026-09-23", "url": LAW_URL}
+
+
+class _Check:
+    def __init__(self, run, snapshot):
+        self.run, self.snapshot = run, snapshot
+        self.item = (run["spec"].get("inspection_item") or {}).get("handler", run["spec"]["item_code"])
+        self.article = 57 if self.item == "stop_work_unload" else 78
+        self.gaps = list(snapshot.get("coverage_gaps", []))
+        self.propositions, self.findings, self.events = [], [], []
+        self.candidate_findings = []
+        self.limitations = []
+        self.rejected_action_context = set()
+        self.used = set()
+        self.facts = []
+        self.version_conflicts = _conflicted_evidence(snapshot)
+        registered = {e["evidence_id"] for e in snapshot["evidence"]}
+        seen = set()
+        if not isinstance(snapshot.get("facts", []), list):
+            raise InvalidRequest("facts must be a list")
+        for f in snapshot.get("facts", []):
+            if (not isinstance(f, dict) or not isinstance(f.get("fact_id"), str)
+                    or f["fact_id"] in seen or not isinstance(f.get("fields", {}), dict)):
+                raise InvalidRequest("invalid or duplicate fact")
+            seen.add(f["fact_id"])
+            refs = f.get("evidence_refs", [])
+            if not isinstance(refs, list) or any(not isinstance(r, str) for r in refs) or not set(refs) <= registered:
+                raise InvalidRequest("fact references unregistered evidence")
+            if f.get("source_role") not in {"actual_record", "requirement", "statement", "regulation"}:
+                raise InvalidRequest("invalid fact source role")
+            if not refs:
+                self.gap(f"uncited fact: {f['fact_id']}")
+                continue
+            if not f.get("event_id") or not f.get("workface"):
+                self.gap(f"unscoped fact: {f['fact_id']}")
+                continue
+            self.facts.append(f)
+        if snapshot.get("source_complete") is not True:
+            self.gap("source coverage is incomplete")
+
+    def gap(self, reason):
+        if reason not in self.gaps:
+            self.gaps.append(reason)
+
+    def prop(self, event, code, state, facts=(), detail="", article=None, rule_refs=None):
+        refs = sorted({r for f in facts if f for r in f.get("evidence_refs", [])})
+        original_state = state
+        if state in {"true", "false"} and set(refs) & self.version_conflicts:
+            state = "missing"
+            detail = (detail + "; " if detail else "") + "同一资料日期和类别存在不同内容版本，相关结论暂缓确定性判断"
+        self.used.update(refs)
+        p = {"event_id": event["event_id"], "workface": event["workface"],
+             "code": code, "state": state, "evidence_refs": refs, "detail": detail,
+             "law_refs": [] if rule_refs else [_law(article or self.article)]}
+        if rule_refs:
+            p["rule_refs"] = rule_refs
+        self.propositions.append(p)
+        if original_state == "false" and state == "missing":
+            self.candidate_findings.append({**p, "status": "candidate", "major_hazard_classification": "not_assessed"})
+        if state == "false":
+            self.findings.append({**p, "status": "no_pass", "major_hazard_classification": "not_assessed"})
+        elif state != "true":
+            self.gap(f"{event['event_id']}/{event['workface']}: {code}: {detail}")
+
+    def order(self, event, code, first, second):
+        known = first and second and _before(first.get("time"), second.get("time"))
+        self.prop(event, code, "true" if known is True else "missing", [first, second],
+                  "time chain is incomplete or precision is insufficient" if known is not True else "")
+        return known
+
+    def actions(self, fs, name):
+        return [f for f in fs if f.get("kind") == "action" and f.get("source_role") == "actual_record"
+                and _fields(f).get("action") == name
+                and (name == "dispatch_release" or _fields(f).get("action_layer", "execution") != "instruction")]
+
+    def context_actions(self, event, fs, name, role=None):
+        result = []
+        for f in self.actions(fs, name):
+            fields = _fields(f)
+            valid = (fields.get("actor_role") and fields.get("target_scope") == event["workface"]
+                     and (not role or fields.get("actor_role") == role)
+                     and _inclusive_before(event.get("time"), f.get("time")) is True)
+            if valid:
+                result.append(f)
+            elif f["fact_id"] not in self.rejected_action_context:
+                self.rejected_action_context.add(f["fact_id"])
+                self.prop(event, "action_context:" + f["fact_id"], "missing", [f],
+                          "action scope, responsible role or event-time relationship is not established")
+        return result
+
+    def action(self, event, fs, name, role=None, immediate=False, trigger=None, violation_context=True, violations=()):
+        found = self.context_actions(event, fs, name, role)
+        done = [f for f in found if _fields(f).get("status") == "done"]
+        denied = [f for f in found if _fields(f).get("status") == "not_done"]
+        if denied and done:
+            self.prop(event, name, "missing", found, "conflicting execution records")
+            return None
+        if denied:
+            instants = list(violations) or ([trigger] if trigger else [])
+            linked = [f for f in denied if any(_denial_covers(f, instant) for instant in instants)]
+            self.prop(event, name, "false" if violation_context and linked else "missing", denied + instants,
+                      "negative execution record is only conclusive at its own instant or explicitly covered status interval")
+            return None
+        if len(done) != 1:
+            self.prop(event, name, "missing", found, "missing or ambiguous actual execution record")
+            return None
+        f, fields = done[0], _fields(done[0])
+        if name == "evacuate" and fields.get("route_conforms") is not True:
+            self.prop(event, name, "false" if fields.get("route_conforms") is False and violation_context else "missing", done,
+                      "evacuation route conformity must be explicitly evidenced")
+            return None
+        if immediate:
+            # No invented number of minutes is a legal definition of immediately.
+            if fields.get("immediate") is not True:
+                self.prop(event, name + "_immediate", "false" if fields.get("immediate") is False else "missing", done,
+                          "immediate response requires explicit actual-record evidence")
+                return None
+            self.order(event, name + "_after_trigger", trigger, f)
+        self.prop(event, name, "true", done)
+        return f
+
+    def compare(self, event, measurement, fs):
+        mf = _fields(measurement)
+        when = _day(measurement.get("time"))
+        q = _quantity(mf)
+        candidates = []
+        for f in fs:
+            fields = _fields(f)
+            if (f.get("kind") != "threshold" or f.get("source_role") != "requirement"
+                    or fields.get("approved") is not True or _point(fields)[:2] != _point(mf)[:2]
+                    or fields.get("point") not in (None, "", mf.get("point"))):
+                continue
+            start, end = _day(fields.get("valid_from")), _day(fields.get("valid_to"))
+            if not when or not start or when < start or (fields.get("valid_to") and (not end or when > end)):
+                continue
+            if isinstance(_time(fields.get("valid_from")), datetime) and _inclusive_before(fields["valid_from"], measurement.get("time")) is not True:
+                continue
+            if isinstance(_time(fields.get("valid_to")), datetime) and _inclusive_before(measurement.get("time"), fields["valid_to"]) is not True:
+                continue
+            tq = _quantity(fields)
+            if tq and q and tq[0] == q[0]:
+                candidates.append((tq[1], f))
+        # Even equal-valued overlapping approvals need explicit supersession.
+        if len(candidates) != 1:
+            self.prop(event, "applicable_threshold", "missing", [measurement] + [f for _, f in candidates],
+                      "missing, expired, unsupported-unit or conflicting approved threshold", article=27)
+            return None
+        value, threshold = candidates[0]
+        self.used.update(measurement["evidence_refs"] + threshold["evidence_refs"])
+        return (q[1] > value) - (q[1] < value), threshold
+
+    def check57(self, event, fs):
+        trigger = event if _fields(event).get("trigger_type") == "dynamic" else None
+        for m in fs:
+            if m.get("kind") != "measurement" or m.get("source_role") != "actual_record" or _fields(m).get("stage") != "warning":
+                continue
+            comparison = self.compare(event, m, fs)
+            drill_index = normalize_method(_fields(m).get("method")) == "钻屑法" and _fields(m).get("metric") in {"钻粉率指数", "drill_powder_index"}
+            if comparison and (comparison[0] > 0 or (drill_index and comparison[0] == 0)):
+                trigger = m
+                self.prop(event, "threshold_trigger", "true", [m, comparison[1]], article=59 if drill_index else 57)
+        if trigger is None:
+            self.prop(event, "trigger", "missing", [event], "warning alone does not prove a statutory trigger")
+            return
+        self.prop(event, "trigger", "true", [trigger])
+        immediate_actions = {a: self.action(event, fs, a, immediate=True, trigger=trigger)
+                             for a in ("stop", "power_off", "evacuate", "report")}
+
+        baseline = self.snapshot.get("rule_baseline") or {}
+        if baseline.get("version") in {"impact-1023-draft-v1", DEFAULT_RULEBOOK_VERSION}:
+            source = baseline.get("source") or {}
+            reference = {"version": baseline["version"], "revision": baseline.get("revision"),
+                         "source": source,
+                         "source_cells": [f"{source.get('sheet', 'AI深度监察')}!{cell}" for cell in ("E2", "F2")],
+                         "status": baseline.get("status", "development-draft")}
+            relief_records = self.context_actions(event, fs, "relief")
+            relief = (relief_records[0] if len(relief_records) == 1
+                      and _fields(relief_records[0]).get("status") == "done" else None)
+            later_actions = [("evacuate", immediate_actions["evacuate"])]
+            if relief_records:
+                later_actions.append(("relief", relief))
+            for later_name, later in later_actions:
+                for first_name in ("stop", "power_off"):
+                    first = immediate_actions[first_name]
+                    times = [_time(f.get("time")) if f else None for f in (first, later)]
+                    known = (_inclusive_before(first["time"], later["time"])
+                             if all(isinstance(t, datetime) for t in times) else None)
+                    self.prop(event, f"draft_{first_name}_not_after_{later_name}",
+                              "true" if known is True else "false" if known is False else "missing",
+                              [first, later],
+                              "Draft workbook E2/F2 requires stop and power-off no later than evacuation and relief; "
+                              "equal precise timestamps are allowed, date-only timing is unresolved; no minute limit is inferred.",
+                              rule_refs=[reference])
+
+        # A separately recorded analysis may be in another file. Resolve it
+        # before continued work, without delaying the immediate responses above.
+        analyses = [f for f in self.context_actions(event, fs, "hazard_analysis")
+                    if _fields(f).get("status") == "done"]
+        confirmed = _fields(event).get("hazard_confirmed")
+        confirmed = confirmed if isinstance(confirmed, bool) else None
+        hazard_anchor = trigger
+        if analyses:
+            if len(analyses) != 1 or not isinstance(_fields(analyses[0]).get("hazard_confirmed"), bool):
+                self.prop(event, "hazard_analysis", "missing", analyses, "danger assessment is ambiguous")
+                confirmed = None
+            elif confirmed is not None and confirmed != _fields(analyses[0])["hazard_confirmed"]:
+                self.prop(event, "hazard_analysis", "missing", analyses + [event], "hazard conclusions conflict")
+                confirmed = None
+            else:
+                confirmed = _fields(analyses[0])["hazard_confirmed"]
+                hazard_anchor = analyses[0]
+                self.order(event, "analysis_after_trigger", trigger, hazard_anchor)
+        # A later return to work may be authorized; it is not automatically a 57 violation.
+        for f in self.context_actions(event, fs, "continue_work"):
+            if _fields(f).get("status") != "done" or not _strict_before(trigger.get("time"), f.get("time")):
+                continue
+            stop = immediate_actions["stop"]
+            reliefs = [r for r in self.context_actions(event, fs, "relief") if _fields(r).get("status") == "done"]
+            before_stop = stop and _strict_before(f.get("time"), stop.get("time"))
+            before_relief = (confirmed is True and _strict_before(hazard_anchor.get("time"), f.get("time"))
+                             and len(reliefs) == 1 and _strict_before(f.get("time"), reliefs[0].get("time")))
+            explicit_failure = [r for r in self.context_actions(event, fs, "stop") if _fields(r).get("status") == "not_done" and _denial_covers(r, f)]
+            if before_stop or before_relief or explicit_failure:
+                self.prop(event, "continued_after_trigger", "false", [trigger, f, stop] + reliefs + explicit_failure + ([event, hazard_anchor] if before_relief else []),
+                          "positive records prove continued work before stopping or before confirmed-danger relief")
+            else:
+                self.prop(event, "continuation_context", "missing", [trigger, f], "later work requires a separately evidenced lawful release; continuation alone is not proof of a violation")
+
+        if confirmed is None:
+            self.prop(event, "hazard_analysis", "missing", [event], "danger assessment is missing; relief cannot be inferred")
+        elif confirmed is True:
+            relief = self.action(event, fs, "relief")
+            self.order(event, "relief_after_hazard", hazard_anchor, relief)
+        else:
+            if not analyses:
+                self.prop(event, "hazard_analysis", "missing", [event], "negative danger assessment needs its actual analysis record")
+            else:
+                self.prop(event, "relief_not_required_by_assessment", "true", analyses)
+
+    def check78(self, event, fs):
+        resumes = [f for f in self.context_actions(event, fs, "resume") + self.context_actions(event, fs, "continue_work") if _fields(f).get("status") == "done"]
+        relief = self.action(event, fs, "relief", violation_context=bool(resumes), violations=resumes)
+        inspection = self.action(event, fs, "inspection", violation_context=bool(resumes), violations=resumes)
+        self.order(event, "inspection_after_relief", relief, inspection)
+        requirements = [f for f in fs if f.get("kind") == "requirements" and f.get("source_role") == "requirement"
+                        and _fields(f).get("approved") is True and _fields(f).get("required_points")]
+        required_points = []
+        if len(requirements) != 1:
+            self.prop(event, "required_points", "missing", requirements, "one applicable approved full method/point specification is required")
+        else:
+            req_fields = _fields(requirements[0])
+            if not req_fields.get("valid_from") and not req_fields.get("valid_to"):
+                self.limitations.append("Approved required-point list has no validity dates; applicability is limited to its explicit event/workface binding, with no cross-period assurance.")
+            raw_points = _fields(requirements[0])["required_points"]
+            if isinstance(raw_points, list) and all(isinstance(p, dict) and all(_point(p)) for p in raw_points):
+                required_points = [_point(p) for p in raw_points]
+                if len(set(required_points)) != len(required_points):
+                    required_points = []
+            if not required_points:
+                self.prop(event, "required_points", "missing", requirements, "invalid or duplicated required points")
+            else:
+                self.prop(event, "required_points", "true", requirements)
+        # Resume is useful positive evidence; absence of it alone is not a violation.
+        measurements = []
+        for point in required_points:
+            found = [f for f in fs if f.get("kind") == "measurement" and f.get("source_role") == "actual_record"
+                     and _fields(f).get("stage") == "effect" and _point(_fields(f)) == point]
+            if len(found) != 1:
+                self.prop(event, "measurement:" + repr(point), "missing", found, "all required raw measurements must be uniquely established")
+                continue
+            m = found[0]
+            measurements.append(m)
+            self.order(event, "measurement_after_relief:" + m["fact_id"], relief, m)
+            self.order(event, "inspection_measurement_link:" + m["fact_id"], inspection, m)
+            if not _effective_at(_fields(requirements[0]), m.get("time")):
+                self.prop(event, "required_points_effective:" + m["fact_id"], "missing", requirements + [m],
+                          "approved method/point specification is not effective at measurement time")
+                continue
+            comparison = self.compare(event, m, fs)
+            if comparison is None:
+                continue
+            cmp, threshold = comparison
+            if cmp < 0:
+                self.prop(event, "below_threshold:" + m["fact_id"], "true", [m, threshold])
+            else:
+                after = [r for r in resumes if _strict_before(m.get("time"), r.get("time"))]
+                self.prop(event, "below_threshold:" + m["fact_id"], "false" if after else "missing", [m, threshold] + after,
+                          "effect must be strictly below threshold; equality is not the major-hazard standard's 'exceeds'")
+        technical = self.action(event, fs, "technical_confirm", role="technical_head", violation_context=bool(resumes), violations=resumes)
+        dispatch = self.action(event, fs, "dispatch_release", role="dispatch", violation_context=bool(resumes), violations=resumes)
+        for m in measurements:
+            self.order(event, "confirmation_after_measurement:" + m["fact_id"], m, technical)
+        self.order(event, "confirmation_after_inspection", inspection, technical)
+        self.order(event, "release_after_confirmation", technical, dispatch)
+        for r in resumes:
+            for name, prerequisite in (("technical_confirm", technical), ("dispatch_release", dispatch)):
+                if prerequisite and _before(prerequisite.get("time"), r.get("time")) is False:
+                    self.prop(event, "resume_before_" + name, "false", [prerequisite, r], "positive timestamps prove premature resumption")
+                else:
+                    self.order(event, "resume_after_" + name, prerequisite, r)
+        if not resumes:
+            self.prop(event, "resumption_observation", "missing", [], "current closed-work state may be safe; no completed resumption chain was observed")
+
+    def finish(self):
+        events = [f for f in self.facts if f.get("kind") == "event" and f.get("source_role") == "actual_record"]
+        keys = {(e["event_id"], e["workface"]) for e in events}
+        for key in sorted(keys):
+            es = [e for e in events if (e["event_id"], e["workface"]) == key]
+            e = es[0]
+            self.events.append({"event_id": key[0], "workface": key[1], "evidence_refs": e["evidence_refs"]})
+            if len(es) != 1 or _time(e.get("time")) is None:
+                self.prop(e, "event_identity", "missing", es, "event identity or time is ambiguous")
+                continue
+            if _day(e["time"]) < DETAILS_EFFECTIVE:
+                self.prop(e, "historical_rule", "missing", [e], "historical rule required: event predates 2026-09-23")
+                continue
+            fs = [f for f in self.facts if (f["event_id"], f["workface"]) == key]
+            self.used.update(e["evidence_refs"])
+            observation = self.snapshot.get("observation", {})
+            start, end = observation.get("start"), observation.get("end")
+            if any(not _inside_observation(f.get("time"), start, end)
+                   for f in fs if f.get("kind") in {"event", "action", "measurement"}):
+                self.prop(e, "observation_window", "missing", [e], "event/chain is not fully bounded by the input observation")
+            (self.check57 if self.item == "stop_work_unload" else self.check78)(e, fs)
+        if not keys:
+            self.gap("no actual event observed; absence of clues cannot establish compliance")
+        if any((f["event_id"], f["workface"]) not in keys for f in self.facts):
+            self.gap("orphan event/workface facts could not be evaluated")
+        if self.findings:
+            return self.result("no_pass", "实际证据证明至少一项必要条件不满足")
+        if self.version_conflicts:
+            return self.result("unverifiable", "存在内容版本冲突，相关结论无法确定")
+        unreadable = any(f.get("state") == "unreadable" for f in self.snapshot.get("coverage", []))
+        unreadable = unreadable or any(str(g).lower().find("unreadable") >= 0 or "requires_ocr" in str(g) for g in self.gaps)
+        if unreadable:
+            return self.result("unverifiable", "必要内容不可读，本轮无法判定")
+        if self.gaps or not self.propositions or any(p["state"] != "true" for p in self.propositions):
+            return self.result("pending", "证据或检查范围不完整，本轮结束")
+        return self.result("pass", "全部必要条件形成完整证据链")
+
+    def result(self, status, description):
+        r = result_base(self.run, status, description,
+                        "本地确定性规则；仅使用实际记录证明执行，不以报告自述代替原始指标；不进行人工改判或重大隐患升级定性。")
+        r.update(profile="local-documents", snapshot_id=self.snapshot["snapshot_id"],
+                 evidence_refs=sorted(self.used), coverage_gaps=self.gaps,
+                 limitations=list(dict.fromkeys(self.limitations)),
+                 events=self.events, propositions=self.propositions, findings=self.findings,
+                 candidate_findings=self.candidate_findings,
+                 version_conflicts=sorted(self.version_conflicts),
+                 law_refs=list({law["id"]: law for p in self.propositions for law in p["law_refs"]}.values()) or [_law(self.article)],
+                 attachments=[{"file_id": f["file_id"]} for f in self.snapshot["files"]])
+        return gate_conflicted_evidence(r, self.snapshot)
+
+
+def evaluate_documents(run, snapshot):
+    """Evaluate registered local facts; schema/ownership errors are technical errors."""
+    assert_snapshot_owner(snapshot, run)
+    handler = (run["spec"].get("inspection_item") or {}).get("handler", run["spec"]["item_code"])
+    if handler not in {"stop_work_unload", "relief_effects"}:
+        raise InvalidRequest("unsupported statutory rule")
+    return _Check(run, snapshot).finish()
+
+
+def _conflicted_evidence(snapshot):
+    """Identify evidence tied to differing bytes for one report date/category."""
+    files = {f.get("file_id"): f for f in snapshot.get("files", []) if f.get("file_id")}
+    groups = {}
+    for file_id, file in files.items():
+        day = file.get("report_date") or (file.get("source_metadata") or {}).get("report_date")
+        category = file.get("material_group") or (file.get("source_metadata") or {}).get("material_group")
+        digest = file.get("content_hash")
+        if day and category and digest:
+            groups.setdefault((day, category), []).append((file_id, digest))
+    conflicted_files = set()
+    for members in groups.values():
+        if len({digest for _, digest in members}) > 1:
+            conflicted_files.update(file_id for file_id, _ in members)
+    evidence = {e.get("evidence_id"): e for e in snapshot.get("evidence", [])}
+    return {eid for eid, entry in evidence.items() if entry.get("file_id") in conflicted_files}
+
+
+def gate_conflicted_evidence(result, snapshot):
+    """Quarantine only findings backed by conflicting source bytes.
+
+    This helper is idempotent and does not mutate ``snapshot``.  It is exposed
+    for the service merge path where scope-check propositions are combined with
+    this evaluator's result.
+    """
+    import copy
+    gated = copy.deepcopy(result)
+    conflicted = _conflicted_evidence(snapshot)
+    if not conflicted:
+        return gated
+    gated["version_conflicts"] = sorted(set(gated.get("version_conflicts", [])) | conflicted)
+    dependent_events = {(fact.get("event_id"), fact.get("workface"))
+                        for fact in snapshot.get("facts", [])
+                        if fact.get("kind") == "event" and set(fact.get("evidence_refs", [])) & conflicted}
+    dependent_events.update((p.get("event_id"), p.get("workface"))
+                            for p in gated.get("propositions", [])
+                            if p.get("code") in {"trigger", "threshold_trigger"}
+                            and set(p.get("evidence_refs", [])) & conflicted)
+    findings, kept = [], []
+    for finding in gated.get("findings", []):
+        if (set(finding.get("evidence_refs", [])) & conflicted
+                or (finding.get("event_id"), finding.get("workface")) in dependent_events):
+            candidate = {**finding, "status": "candidate", "state": "missing"}
+            kept.append(candidate)
+        else:
+            findings.append(finding)
+    gated["findings"] = findings
+    gated["candidate_findings"] = gated.get("candidate_findings", []) + kept
+    affected = bool(kept) or any(set(p.get("evidence_refs", [])) & conflicted
+                               for p in gated.get("propositions", []))
+    for proposition in gated.get("propositions", []):
+        if (set(proposition.get("evidence_refs", [])) & conflicted
+                or (proposition.get("event_id"), proposition.get("workface")) in dependent_events) and proposition.get("state") in {"true", "false"}:
+            proposition["state"] = "missing"
+            affected = True
+            proposition["detail"] = (proposition.get("detail", "") + "; " + "同一资料日期和类别存在不同内容版本，相关结论暂缓确定性判断").strip("; ")
+    if affected:
+        gap = "同一资料日期和类别存在不同内容版本，相关证据已隔离，不能作确定判断"
+        gated["coverage_gaps"] = list(dict.fromkeys(gated.get("coverage_gaps", []) + [gap]))
+        gated["uncertain_evidence_refs"] = sorted(set(gated.get("uncertain_evidence_refs", [])) | conflicted)
+        if "evidence_refs" in gated:
+            gated["evidence_refs"] = sorted(set(gated["evidence_refs"]) - conflicted)
+    if not findings and affected and gated.get("status") in {"no_pass", "pass"}:
+        gated["status"] = "unverifiable"
+        gated["description"] = "存在内容版本冲突，相关结论无法确定"
+    return gated

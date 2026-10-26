@@ -1,0 +1,38 @@
+# Local-only upstream task simulator. Copy to local-debug.toml and keep the
+# server bound to loopback. No callback section or task token is needed.
+# The page edits inspection-config.json beside the selected ledger. To use an
+# environment-specific file, set COMPLIANCE_INSPECTION_CONFIG before startup.
+[service]
+source_system = "debug-local"
+environment = "local"
+local_debug = true
+check_url = "/inspection/tasks"
+
+[oceanbase]
+compatibility_mode = "mysql"
+driver_module = "pymysql"
+table = "mine_remote_disaster_file"
+host_env = "COMPLIANCE_OB_HOST"
+port_env = "COMPLIANCE_OB_PORT"
+database_env = "COMPLIANCE_OB_DATABASE"
+user_env = "COMPLIANCE_OB_USER"
+password_env = "COMPLIANCE_OB_PASSWORD"
+connect_timeout_seconds = 10
+
+[attachments]
+# When the catalog stores object keys, compose local_bucket_name and
+# local_attachment_address against this deployment-owned origin.
+# base_url = "https://files.example.com/"
+# Optional exact certificate SHA256 pins for reviewed self-signed HTTPS origins:
+# tls_certificate_sha256 = { "https://files.example.com" = "<64 hex characters>" }
+allowed_hosts = ["files.example.com"]
+allowed_origins = []
+allow_http = false
+allow_private = false
+allow_loopback = false
+max_bytes = 52428800
+
+[[principals]]
+allowed_mines = ["MINE-001"]
+
+[status_map]

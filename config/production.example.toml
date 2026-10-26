@@ -1,0 +1,49 @@
+# Copy to a deployment-only configuration and review real hosts/tenant schema.
+# No connection or network request occurs until a worker executes a task.
+# Existing DB-API driver is required; no driver is installed by this service.
+[service]
+source_system = "oceanbase"
+# Environment is part of immutable ownership; SQLite remains unvalidated for HA.
+environment = "production"
+check_url = "/inspection/tasks"
+
+[oceanbase]
+# Confirm tenant compatibility mode, view DDL and this driver's connect kwargs.
+compatibility_mode = "mysql"
+driver_module = "pymysql"
+table = "mine_remote_disaster_file"
+host_env = "COMPLIANCE_OB_HOST"
+port_env = "COMPLIANCE_OB_PORT"
+database_env = "COMPLIANCE_OB_DATABASE"
+user_env = "COMPLIANCE_OB_USER"
+password_env = "COMPLIANCE_OB_PASSWORD"
+connect_timeout_seconds = 10
+
+[callback]
+allowed_hosts = ["callback.example.com"]
+allowed_origins = []
+allow_http = false
+allow_private = false
+allow_loopback = false
+timeout_seconds = 10
+# Optional secret headers, resolved only from environment. Entire value includes
+# the scheme when required (for example Bearer followed by the access token).
+# header_envs = { Authorization = "COMPLIANCE_CALLBACK_AUTHORIZATION" }
+
+[attachments]
+allowed_hosts = ["files.example.com"]
+allowed_origins = []
+allow_http = false
+# Set true only for reviewed allowlisted internal attachment hosts.
+allow_private = false
+allow_loopback = false
+max_bytes = 52428800
+
+[[principals]]
+token_env = "COMPLIANCE_TASK_TOKEN"
+allowed_mines = ["REPLACE_WITH_AUTHORIZED_MINE_ID"]
+
+# Empty by default. Add exact pause/resume wire strings only after agreement.
+[status_map]
+# paused = "pause"
+# resumed = "resume"

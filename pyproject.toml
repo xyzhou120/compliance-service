@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coal-impact-compliance-service"
+version = "0.4.0"
+description = "Independent evidence-bound local document compliance checking service"
+requires-python = ">=3.12"
+dependencies = ["fastapi==0.115.12", "uvicorn==0.34.1", "pypdf==5.4.0", "python-docx==1.1.2", "openpyxl==3.1.5"]
+
+[project.optional-dependencies]
+test = ["httpx==0.28.1", "Pillow==11.2.1"]
+
+[tool.setuptools.packages.find]
+include = ["compliance_service*"]
+
+[tool.setuptools.package-data]
+compliance_service = ["data/*.json", "debug.html", "web/index.html", "web/assets/*"]
