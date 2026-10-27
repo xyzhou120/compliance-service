@@ -127,6 +127,24 @@ class DocumentPipelineTests(unittest.TestCase):
         self.assertEqual(0, report["unsafe_pass_count"])
         self.assertEqual(0, report["untraceable_case_count"])
 
+    def test_unknown_extra_columns_are_advisories_not_evidence_gaps(self):
+        # 真实台账常见"多一列备注/出勤人数"：这是格式信息，不能把整份资料判成不完整
+        def save_extra(path, rows, extra):
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(HEADERS + extra)
+            for values in rows:
+                sheet.append([values.get(header, "") for header in HEADERS] + ["x"] * len(extra))
+            workbook.save(path)
+        manifest = self.manifest(effect_rows())
+        save_extra(self.root / "actions.xlsx", effect_rows()[1:], ["备注", "出勤人数"])
+        run_id = self.submit(manifest)
+        self.service.run_once()
+        snapshot = self.get(run_id)["snapshot"]
+        self.assertTrue(any("unknown_headers" in note for note in snapshot["advisories"]), snapshot["advisories"])
+        self.assertFalse(any("unknown_headers" in gap for gap in snapshot["coverage_gaps"]), snapshot["coverage_gaps"])
+        self.assertTrue(snapshot["source_complete"], snapshot["coverage_gaps"])
+
     def test_snapshot_copies_and_cache_reuse_do_not_hide_changed_input(self):
         path = self.manifest(effect_rows())
         first_id = self.submit(path)

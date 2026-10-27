@@ -42,6 +42,34 @@ class ScopeChecksTests(unittest.TestCase):
         self.assertTrue(all(set(p["evidence_refs"]) <= registered for p in result["propositions"]))
         return result
 
+    def test_evidence_outside_the_observation_window_cannot_become_a_finding(self):
+        chain = full_scope_chain("stop_work_unload")
+        relief = next(f for f in chain if f["fact_id"] == "relief")
+        relief["fields"]["acceptance_passed"] = False      # 窗口内本会形成 finding
+        run, snapshot = run_snapshot("stop_work_unload", chain)
+        snapshot["observation"] = {"start": "2026-09-30T00:00:00", "end": "2026-09-30T23:59:59"}
+        result = evaluate_scope(run, snapshot)
+        self.assertEqual([], result["findings"])
+        self.assertTrue(any(p["code"] == "observation_window" and p["state"] == "missing"
+                            for p in result["propositions"]))
+        self.assertTrue(any("观测窗口" in gap for gap in result["gaps"]), result["gaps"])
+
+    def test_in_window_evidence_still_produces_the_finding(self):
+        chain = full_scope_chain("stop_work_unload")
+        relief = next(f for f in chain if f["fact_id"] == "relief")
+        relief["fields"]["acceptance_passed"] = False
+        result = self.evaluate("stop_work_unload", chain)
+        self.assertTrue(result["findings"])
+        self.assertFalse(any(p["code"] == "observation_window" for p in result["propositions"]))
+
+    def test_missing_observation_window_cannot_be_treated_as_inside(self):
+        chain = full_scope_chain("stop_work_unload")
+        run, snapshot = run_snapshot("stop_work_unload", chain)
+        snapshot.pop("observation")
+        result = evaluate_scope(run, snapshot)
+        self.assertEqual([], result["findings"])
+        self.assertTrue(any("观测窗口" in gap for gap in result["gaps"]), result["gaps"])
+
     def test_complete_multi_document_actual_evidence_satisfies_full_scope(self):
         for item in ("stop_work_unload", "relief_effects"):
             with self.subTest(item=item):

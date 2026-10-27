@@ -57,6 +57,21 @@ def _has_failed_recognition(parsed):
     return False
 
 
+def _page_receipts(parsed_files):
+    """Per-page receipts are opt-in (COMPLIANCE_PAGE_RECEIPTS=1).
+
+    Default off keeps the legacy snapshot shape and behaviour untouched.
+    """
+    from . import pipeline_flags
+    from .ingest import build_page_receipts
+    if not (pipeline_flags.enabled("page_receipts") or pipeline_flags.snapshot().get("page_receipts")):
+        return []
+    try:
+        return build_page_receipts(parsed_files)
+    except Exception:                       # receipts must never fail a run
+        return []
+
+
 class LocalDocumentSource:
     """Read only listed files; never discover or query an external source implicitly."""
 
@@ -115,6 +130,7 @@ class LocalDocumentSource:
                                             entry.get("report_date") or "", entry["file_id"]))
         progress(stage="source", event="source_started", file_total=len(entries), status="running")
         files, parsed_files, gaps, coverage = [], [], [], []
+        advisories = []
         parsed_count = reused_count = invalidated_count = 0
         screening_done = False
         for file_index, entry in enumerate(entries, 1):
@@ -282,6 +298,7 @@ class LocalDocumentSource:
             daily_assessment = {"issues": [], "episodes": [], "gaps": [], "summary": {
                 "clue_count": 0, "issue_count": 0, "episode_count": 0, "confirmed_count": 0,
                 "candidate_count": 0, "unverifiable_count": 0, "version_conflict_count": 0}}
+        advisories.extend(extraction.get("advisories", []))
         gaps.extend(extraction["gaps"])
         gaps.extend(association["gaps"])
         if daily_relevant:
@@ -313,6 +330,10 @@ class LocalDocumentSource:
             "daily_candidate_evidence": daily_candidate_evidence,
             "daily_gaps": daily_extraction["gaps"], "daily_assessment": daily_assessment,
             "coverage": coverage, "coverage_gaps": list(dict.fromkeys(gaps)),
+            # Format advisories (unknown column names, etc.) are reported but do
+            # not count as missing evidence, so they never block completeness.
+            "advisories": list(dict.fromkeys(advisories)),
+            "page_receipts": _page_receipts(parsed_files),
             "source_complete": not gaps and bool(files),
             "cache": {"parsed": parsed_count, "reused": reused_count, "invalidated": invalidated_count},
         }

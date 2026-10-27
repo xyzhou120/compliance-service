@@ -14,6 +14,36 @@ def settings():
 
 
 class RecognitionQualityTests(unittest.TestCase):
+    def test_page_budget_defaults_are_explicit_and_configurable(self):
+        from copy import deepcopy
+        from pypdf import PdfWriter
+        native = {"file_id": "r", "format": "pdf", "content_hash": "h", "blocks": [], "issues": [],
+                  "coverage": [{"unit_id": f"page:{i}", "state": "unreadable",
+                                "reason": "page_image_requires_ocr"} for i in range(1, 26)]}
+        def fake_recognize(image_bytes, *_args, **_kwargs):
+            return {"readable": False, "issues": [], "candidates": [], "quality_policy": "t", "checked_blocks": []}
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "r.pdf"
+            writer = PdfWriter()
+            for _ in range(25):
+                writer.add_blank_page(width=100, height=100)
+            with path.open("wb") as stream:
+                writer.write(stream)
+            with patch("compliance_service.ocr_documents.parse_document",
+                       side_effect=lambda *args, **kwargs: deepcopy(native)), \
+                 patch("compliance_service.ocr_documents._pdf_image_candidates",
+                       side_effect=lambda _p, page, _r: [(b"x", "image/png", {"page": page})]), \
+                 patch("compliance_service.ocr_documents.recognize_checked", side_effect=fake_recognize):
+                default = parse_with_models(path, file_id="r", settings=settings())
+                limited_settings = settings()
+                limited_settings["ocr"]["max_pages"] = 3
+                capped = parse_with_models(path, file_id="r", settings=limited_settings)
+        # 旧的硬编码 20 页会静默截断真实日报；默认预算必须覆盖整份文档
+        self.assertEqual(25, default["recognition_budget"]["attempted_pages"])
+        self.assertEqual(0, default["recognition_budget"]["skipped_pages"])
+        self.assertEqual(3, capped["recognition_budget"]["attempted_pages"])
+        self.assertEqual(22, capped["recognition_budget"]["skipped_pages"])
+
     def test_two_page_workers_preserve_evidence_order_and_bound_concurrency(self):
         from pypdf import PdfWriter
         from threading import Lock
@@ -204,7 +234,11 @@ class RecognitionQualityTests(unittest.TestCase):
             Image.new("RGB", (30, 30), "white").save(path)
             before = path.read_bytes()
             result = parse_with_models(path, file_id="scan", settings=settings(), transport=transport)
-            self.assertEqual("readable", result["coverage"][0]["state"])
+            # 双通道一致不等于原文真相：页面仍为 unreadable，只升级识别状态并留复核标记
+            self.assertEqual("unreadable", result["coverage"][0]["state"])
+            self.assertEqual("independent_providers_agreed",
+                             result["coverage"][0]["model_transcription"]["status"])
+            self.assertTrue(result["coverage"][0]["model_transcription"]["requires_review"])
             self.assertEqual("recognized_page", result["blocks"][0]["kind"])
             self.assertEqual(before, path.read_bytes())
             self.assertEqual({"image": 1}, result["blocks"][0]["locator"])

@@ -33,6 +33,14 @@ def run_snapshot(item, facts, **overrides):
     return run, snapshot
 
 
+def evaluate_chain(item, chain, **snapshot_fields):
+    """Module-level helper for test classes that are not RulesTests."""
+    run, snapshot = run_snapshot(item, chain, **snapshot_fields)
+    result = evaluate_documents(run, snapshot)
+    validate_result(result, run, snapshot)
+    return result
+
+
 def stop_chain():
     return [event(), *(action(name, 1, immediate=True, **({"route_conforms": True} if name == "evacuate" else {}))
                        for name in ("stop", "power_off", "evacuate", "report")), action("relief", 5)]
@@ -65,6 +73,35 @@ class RulesTests(unittest.TestCase):
                 result = self.evaluate(item, chain)
                 self.assertEqual("pass", result["status"], result["coverage_gaps"])
                 self.assertTrue(result["law_refs"])
+
+    def test_rulebook_unregistered_statutes_are_never_cited(self):
+        # 规则表 I2/I3 只登记了 19/55/57/64/65/75/78/108 等条；27/59 是历史硬编码
+        for item, chain in (("stop_work_unload", stop_chain()), ("relief_effects", effect_chain())):
+            with self.subTest(item=item):
+                result = self.evaluate(item, chain)
+                articles = {law["article"] for law in result["law_refs"]}
+                self.assertNotIn("第27条", articles)
+                self.assertNotIn("第59条", articles)
+                for proposition in result["propositions"]:
+                    self.assertNotIn("第27条", {law["article"] for law in proposition["law_refs"]})
+
+    def test_percent_and_unitless_threshold_are_never_silently_converted(self):
+        # 1.2 % 与阈值 1（无量纲）本是不同刻度：历史实现会换算成 0.012 < 1 并判为
+        # "低于阈值"（假 pass）。刻度不一致时必须拒绝比较，只允许 pending。
+        result = self.evaluate("relief_effects",
+                               effect_chain(value="1.2", threshold="1", unit="%", threshold_unit="1"))
+        self.assertEqual("pending", result["status"])
+        self.assertEqual([], result["findings"])
+        threshold = next(p for p in result["propositions"] if p["code"] == "applicable_threshold")
+        self.assertEqual("missing", threshold["state"])
+        self.assertIn("scale", threshold["detail"])
+        self.assertTrue(any("刻度" in note for note in result["limitations"]))
+
+    def test_same_scale_units_still_compare_after_conversion(self):
+        for unit, threshold_unit, value, threshold in (("MPa", "kPa", "8", "10000"), ("m", "mm", "2", "3500")):
+            with self.subTest(unit=unit):
+                chain = effect_chain(value=value, threshold=threshold, unit=unit, threshold_unit=threshold_unit)
+                self.assertEqual("pass", self.evaluate("relief_effects", chain)["status"])
 
     def test_missing_stop_record_and_requirement_cannot_prove_execution(self):
         for mode in ("remove", "requirement", "statement"):
@@ -411,6 +448,50 @@ class RulesTests(unittest.TestCase):
     def test_method_normalization_is_bounded(self):
         self.assertEqual("应力监测法", normalize_method(" 应力监测 "))
         self.assertNotEqual(normalize_method("微震监测"), normalize_method("应力监测"))
+
+class GradeThresholdTests(unittest.TestCase):
+    """色阶阈值（蓝/黄/橙/红）必须按事件危险等级取档，取不到就不比较。"""
+
+    def graded_chain(self, *, event_grade, measured="13"):
+        chain = effect_chain(value=measured, threshold="10")
+        event_fact = next(f for f in chain if f["kind"] == "event")
+        if event_grade is not None:
+            event_fact["fields"]["risk_grade"] = event_grade
+        chain = [f for f in chain if f["fact_id"] != "threshold"]
+        point = {"method": "应力监测法", "metric": "煤体应力", "point": "P1"}
+        for index, (grade, value) in enumerate((("蓝", "3"), ("红", "12"))):
+            chain.append(fact("threshold", "threshold-" + grade,
+                              {**point, "value": value, "unit": "MPa", "approved": True,
+                               "valid_from": "2026-09-23", "grade": grade},
+                              role="requirement")
+                         )
+        return chain
+
+    def test_strong_risk_uses_the_red_threshold(self):
+        result = evaluate_chain("relief_effects", self.graded_chain(event_grade="强冲击危险"))
+        # 实测 13 > 红档 12，不低于阈值 → 已复工即为不合规
+        self.assertEqual("no_pass", result["status"], result["coverage_gaps"])
+        used = {ref for finding in result["findings"] for ref in finding["evidence_refs"]}
+        self.assertIn("threshold-红", used)
+        self.assertNotIn("threshold-蓝", used)
+
+    def test_missing_event_grade_refuses_the_comparison(self):
+        result = evaluate_chain("relief_effects", self.graded_chain(event_grade=None))
+        self.assertEqual("pending", result["status"])
+        threshold = next(p for p in result["propositions"] if p["code"] == "applicable_threshold")
+        self.assertEqual("missing", threshold["state"])
+        self.assertIn("色阶", threshold["detail"])
+        self.assertTrue(any("色阶" in note for note in result["limitations"]))
+
+    def test_grade_without_matching_bucket_is_not_compared(self):
+        result = evaluate_chain("relief_effects", self.graded_chain(event_grade="中等冲击危险"))
+        self.assertEqual("pending", result["status"])
+        threshold = next(p for p in result["propositions"] if p["code"] == "applicable_threshold")
+        self.assertIn("匹配", threshold["detail"])
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

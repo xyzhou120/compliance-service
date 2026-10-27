@@ -41,7 +41,10 @@ class FactExtractionTests(unittest.TestCase):
             self.assertTrue({"row-1", "row-3"} <= set(fact["evidence_refs"]))
             self.assertEqual(fact["sources"][0]["file_id"], "f1")
             self.assertIn(fact["sources"][0]["locator"]["row"], (4, 7))
-        self.assertTrue(any("unknown_headers:区队,班次,出勤人数,备注" in g for g in result["gaps"]))
+        # 未知列是格式信息，不再计入证据缺口（否则真实台账结构性无法通过）
+        # 出勤人数现在是已知别名（进入 attendance_count），不再算未知表头
+        self.assertTrue(any("unknown_headers:区队,班次,备注" in g for g in result["advisories"]))
+        self.assertFalse(any("unknown_headers" in g for g in result["gaps"]))
 
     def test_sheet_report_context_does_not_cross_file_or_sheet(self):
         title = row(["调度日报 2026年10月14日", "", "", ""], ["title"], eid="title")
@@ -57,7 +60,7 @@ class FactExtractionTests(unittest.TestCase):
         result = extract_facts([row(VALUES + ["已停工", "甲", "乙", "", "尾"],
                                    ANCHORS + ["动作", "备注", "备注", "", ""])])
         self.assertEqual(result["facts"][0]["fields"]["action"], "stop")
-        self.assertTrue(any("unknown_headers:备注,备注" in g for g in result["gaps"]))
+        self.assertTrue(any("unknown_headers:备注,备注" in g for g in result["advisories"]))
 
     def test_pdf_inline_explicit_labels_and_narrow_body_record(self):
         result = extract_facts([record("工作面：401104工作面 时间：2026年10月14日 08:10 动作：已停工", eid="pdf-line")], allow_unbound=True)
@@ -145,9 +148,12 @@ class FactExtractionTests(unittest.TestCase):
     def test_headers_are_skipped_and_unknown_header_reported(self):
         headers = ANCHORS + ["动作"]
         result = extract_facts([row(headers, headers)])
-        self.assertEqual(result, {"facts": [], "candidates": [], "gaps": []})
+        self.assertEqual(result["facts"], [])
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["gaps"], [])
+        self.assertEqual(result["advisories"], [])
         result = extract_facts([row(VALUES + ["内容"], ANCHORS + ["新列"])])
-        self.assertTrue(any("unknown_headers:新列" in gap for gap in result["gaps"]))
+        self.assertTrue(any("unknown_headers:新列" in gap for gap in result["advisories"]))
 
     def test_requirement_list_is_explicit_never_inferred(self):
         required = [{"method": "钻屑法", "metric": "钻屑量", "point": "P1"}]

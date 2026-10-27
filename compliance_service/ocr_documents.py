@@ -138,6 +138,41 @@ def recognize_checked(image_bytes, mime_type, settings, *, transport=None, progr
 
 
 def _render_page(path, page, settings):
+    try:
+        return _render_page_with_external(path, page, settings)
+    except RuntimeError as exc:
+        # A broken/missing poppler must not block scanning: fall back to the
+        # in-process renderer when the dependency is available.
+        rendered = _render_page_with_pymupdf(path, page, settings)
+        if rendered is not None:
+            return rendered
+        raise exc
+
+
+def _render_page_with_pymupdf(path, page, settings):
+    try:
+        import pymupdf
+    except ImportError:
+        return None
+    dpi = settings.get("ocr", {}).get("pdf_render_dpi", 150)
+    if type(dpi) is not int or not 72 <= dpi <= 300:
+        dpi = 150
+    try:
+        with pymupdf.open(str(path)) as document:
+            if page < 1 or page > document.page_count:
+                raise RuntimeError("pdf_page_render_failed")
+            pixmap = document[page - 1].get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0))
+            data = pixmap.tobytes("png")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("pdf_page_render_failed") from exc
+    if not data or len(data) > 30 * 1024 * 1024:
+        raise RuntimeError("rendered_image_exceeds_limit")
+    return data
+
+
+def _render_page_with_external(path, page, settings):
     renderer = settings.get("ocr", {}).get("pdf_renderer") or shutil.which("pdftoppm")
     if not renderer:
         raise RuntimeError("pdf_renderer_not_configured")
@@ -225,8 +260,10 @@ def parse_with_models(path, *, file_id, settings, transport=None, progress_callb
     eligible = [u for u in result["coverage"] if u["state"] in {"unreadable", "partial"}
                 and (u.get("reason") in {"image_requires_ocr", "page_image_requires_ocr",
                                           "page_contains_image_requires_ocr", "nonempty_page_without_extractable_text"})]
-    maximum = settings.get("ocr", {}).get("max_pages", 20)
-    maximum = maximum if type(maximum) is int and maximum > 0 else 20
+    # Recognising only the first 20 pages silently capped real reports; the
+    # budget is now explicit, configurable, and large enough for scanned dailies.
+    requested_budget = settings.get("ocr", {}).get("max_pages", 200)
+    maximum = requested_budget if type(requested_budget) is int and 1 <= requested_budget <= 2000 else 200
     result["recognition_budget"] = {"eligible_pages": len(eligible), "attempted_pages": 0,
                                     "skipped_pages": 0, "max_pages": maximum}
     recognition_cache = {}
@@ -307,7 +344,15 @@ def parse_with_models(path, *, file_id, settings, transport=None, progress_callb
         unit["recognition"] = {"images": completed["observations"], "issues": completed["issues"],
                                "status": "compared" if completed["all_compared"] else "incomplete"}
         if completed["all_compared"] and unit["state"] == "unreadable":
-            unit.update(state="readable", reason="independent_blocks_compared_not_source_truth")
+            # Two independent providers agreeing is not proof of the source text.
+            # The page therefore stays unreadable for coverage purposes and only
+            # carries a review marker: a business verdict may never rest on model
+            # transcription alone (INV-2 in docs/document-pipeline-spec-v0.md).
+            unit["model_transcription"] = {
+                "status": "independent_providers_agreed",
+                "requires_review": True,
+                "reason": "independent_blocks_compared_not_source_truth",
+            }
         result["issues"].extend(unit["unit_id"] + ": " + issue for issue in completed["issues"])
         if progress_callback:
             progress_callback({"stage": "recognition", "event": "page_finished", "file_id": file_id,

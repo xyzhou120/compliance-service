@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 from .contracts import InvalidRequest, assert_snapshot_owner
 from .fixtures import result_base
 from .rulebook import DEFAULT_RULEBOOK_VERSION
+from .grades import normalize_risk
+from .units import quantity as shared_quantity
 
 
 DETAILS_EFFECTIVE = date(2026, 9, 23)
@@ -123,27 +125,20 @@ def _strict_before(a, b):
     return _before(a, b) is True and _time(a) != _time(b)
 
 
-_UNITS = {
-    "mpa": ("pressure", "1"), "kpa": ("pressure", "0.001"), "pa": ("pressure", "0.000001"),
-    "j": ("energy", "1"), "kj": ("energy", "1000"),
-    "kg/m": ("drill_mass", "1"), "g/m": ("drill_mass", "0.001"),
-    "1": ("index", "1"), "无量纲": ("index", "1"), "%": ("index", "0.01"),
-    "m": ("length", "1"), "cm": ("length", "0.01"), "mm": ("length", "0.001"),
-    "mv": ("voltage", "1"), "v": ("voltage", "1000"),
-}
-
-
 def _quantity(fields):
+    """Dimension, converted value and scale family from the shared unit table."""
     value = _number(fields.get("value"))
-    unit = _UNITS.get(str(fields.get("unit", "")).strip().lower())
-    if value is None or unit is None:
+    if value is None:
+        return None
+    converted = shared_quantity(value, fields.get("unit", ""))
+    if converted is None:
         return None
     # A shared numeric unit must never make a drill-powder index into pressure.
     method = normalize_method(fields.get("method"))
     metric = str(fields.get("metric", ""))
-    if (method == "钻屑法" or "钻粉" in metric or "钻屑" in metric) and unit[0] == "pressure":
+    if (method == "钻屑法" or "钻粉" in metric or "钻屑" in metric) and converted[0] == "pressure":
         return None
-    return unit[0], value * Decimal(unit[1])
+    return converted
 
 
 def _point(fields):
@@ -191,6 +186,19 @@ class _Check:
             self.facts.append(f)
         if snapshot.get("source_complete") is not True:
             self.gap("source coverage is incomplete")
+
+    def _risk_grade(self, event, fs):
+        """Grade of this event, taken only from explicit risk wording."""
+        for source in [event] + list(fs):
+            fields = _fields(source)
+            if not fields.get("risk_grade") and not fields.get("hazard_grade"):
+                continue
+            if source is not event and fields.get("hazard_confirmed") is None:
+                continue
+            grade = normalize_risk(fields.get("risk_grade") or fields.get("hazard_grade"))
+            if grade:
+                return grade
+        return None
 
     def gap(self, reason):
         if reason not in self.gaps:
@@ -278,6 +286,8 @@ class _Check:
         when = _day(measurement.get("time"))
         q = _quantity(mf)
         candidates = []
+        graded = []
+        scale_mismatch = []
         for f in fs:
             fields = _fields(f)
             if (f.get("kind") != "threshold" or f.get("source_role") != "requirement"
@@ -293,11 +303,44 @@ class _Check:
                 continue
             tq = _quantity(fields)
             if tq and q and tq[0] == q[0]:
-                candidates.append((tq[1], f))
+                if tq[2] != q[2]:
+                    # Same dimension, different scale (percent vs ratio). Comparing
+                    # the raw numbers would fabricate a direction, so refuse.
+                    scale_mismatch.append(f)
+                    continue
+                grade = normalize_risk(fields.get("grade")) if fields.get("grade") else None
+                if grade:
+                    graded.append((tq[1], f, grade))
+                else:
+                    candidates.append((tq[1], f))
+        # Grade-matrix thresholds (蓝/黄/橙/红) are only usable with the grade of
+        # this very event; without it no comparison may happen.
+        graded_note = None
+        if graded:
+            event_grade = self._risk_grade(event, fs)
+            if event_grade is None:
+                graded_note = "阈值按色阶（蓝/黄/橙/红）给出，但事件危险等级缺失，已拒绝比较"
+                candidates = []
+            else:
+                candidates.extend((value, f) for value, f, grade in graded if grade == event_grade)
+                if not candidates:
+                    graded_note = "色阶阈值中没有与事件危险等级匹配的档位"
         # Even equal-valued overlapping approvals need explicit supersession.
         if len(candidates) != 1:
-            self.prop(event, "applicable_threshold", "missing", [measurement] + [f for _, f in candidates],
-                      "missing, expired, unsupported-unit or conflicting approved threshold", article=27)
+            detail = "missing, expired, unsupported-unit or conflicting approved threshold"
+            if graded_note:
+                detail = graded_note
+                if graded_note not in self.limitations:
+                    self.limitations.append(graded_note)
+            if scale_mismatch and not candidates and not graded_note:
+                detail = "threshold unit scale differs from the measurement (percent vs ratio); comparison refused"
+                note = "阈值与实测值的单位刻度不一致（百分比 vs 无量纲），已拒绝换算比较"
+                if note not in self.limitations:
+                    self.limitations.append(note)
+            # No hard-coded statute here: the rulebook registers which articles
+            # cover this condition. Inventing 第27条 would be a fabricated citation.
+            self.prop(event, "applicable_threshold", "missing",
+                      [measurement] + [f for _, f in candidates] + scale_mismatch, detail)
             return None
         value, threshold = candidates[0]
         self.used.update(measurement["evidence_refs"] + threshold["evidence_refs"])
@@ -312,7 +355,14 @@ class _Check:
             drill_index = normalize_method(_fields(m).get("method")) == "钻屑法" and _fields(m).get("metric") in {"钻粉率指数", "drill_powder_index"}
             if comparison and (comparison[0] > 0 or (drill_index and comparison[0] == 0)):
                 trigger = m
-                self.prop(event, "threshold_trigger", "true", [m, comparison[1]], article=59 if drill_index else 57)
+                self.prop(event, "threshold_trigger", "true", [m, comparison[1]])
+                if drill_index:
+                    # The drill-powder trigger has no registered statute entry in
+                    # the rulebook, so it must not borrow one.
+                    self.propositions[-1]["law_refs"] = []
+                    note = "钻粉率指数触发条件未在规则表登记法条，本条不附法规出处"
+                    if note not in self.limitations:
+                        self.limitations.append(note)
         if trigger is None:
             self.prop(event, "trigger", "missing", [event], "warning alone does not prove a statutory trigger")
             return

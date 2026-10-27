@@ -69,6 +69,11 @@ FIELD_ALIASES = {
     "unrelated_equipment_stopped": ("无关设备已停",),
     "expected_personnel": ("应撤人数",),
     "withdrawn_personnel": ("实撤人数",),
+    "attendance_count": ("出勤人数", "出勤人数（人）", "出勤人数(人)", "出勤"),
+    "coal_cutting_count": ("当班割煤刀数", "当班割煤刀数（刀）", "割煤刀数", "刀数"),
+    "planned_cutting_count": ("日计划割煤", "日计划割煤（刀）"),
+    "cumulative_cutting_count": ("本月累计割煤", "本月累计割煤（刀）", "月累计割煤"),
+    "work_content": ("作业内容", "产量（t）/进尺（m）/作业内容", "产量(t)/进尺(m)/作业内容"),
     "signer": ("签字人",),
     "signature_present": ("签名存在",),
     "signed_at": ("签署时间",),
@@ -77,7 +82,7 @@ FIELD_ALIASES = {
     "event_time_reference": ("关联事件时间",),
 }
 FIELD_ALIASES["target_scope"] += ("适用范围",)
-FIELD_ALIASES["workface"] += ("工作面（作业点）名称", "工作面(作业点)名称")
+FIELD_ALIASES["workface"] += ("工作面（作业点）名称", "工作面(作业点)名称", "工作面名称", "工作地点")
 FIELD_ALIASES["work_content"] = ("作业内容", "产量（t）/进尺（m）/作业内容", "产量(t)/进尺(m)/作业内容")
 
 
@@ -239,7 +244,8 @@ def _mapped(pairs: dict[str, Any], gaps: list[str]) -> dict[str, Any]:
     return mapped
 
 
-def _source_values(entry: dict, gaps: list[str]) -> tuple[dict[str, Any], bool]:
+def _source_values(entry: dict, gaps: list[str],
+                   advisories: list[str] | None = None) -> tuple[dict[str, Any], bool]:
     meta = entry.get("metadata") or {}
     cells = meta.get("cells")
     headers = meta.get("headers")
@@ -258,7 +264,10 @@ def _source_values(entry: dict, gaps: list[str]) -> tuple[dict[str, Any], bool]:
             by_header[label] = value
         unknown = [str(h) for h in headers if str(h).strip() and _norm(h) not in known]
         if unknown:
-            gaps.append("unknown_headers:" + ",".join(unknown))
+            # Format information, not missing evidence: an unknown column must
+            # never be the reason a document cannot be judged complete.
+            target = advisories if advisories is not None else gaps
+            target.append("unknown_headers:" + ",".join(unknown))
         pairs = {str(h): cells[i] for i, h in enumerate(headers)
                  if i < len(cells) and str(h).strip() and cells[i] is not None and str(cells[i]).strip()}
         values = _mapped(pairs, gaps)
@@ -441,6 +450,7 @@ def extract_facts(evidence: list[dict], *, allow_unbound=False) -> dict:
     facts: list[dict] = []
     candidates: list[dict] = []
     gaps: list[str] = []
+    advisories: list[str] = []
     records = []
     for original in _table_records(evidence):
         if not isinstance(original, dict):
@@ -465,7 +475,7 @@ def extract_facts(evidence: list[dict], *, allow_unbound=False) -> dict:
             continue
         initial_fact_count = len(facts)
         local_gaps: list[str] = []
-        values, structured = _source_values(entry, local_gaps)
+        values, structured = _source_values(entry, local_gaps, advisories)
         metadata_gaps = (entry.get("metadata") or {}).get("gaps") or []
         if metadata_gaps:
             local_gaps.extend("source_content_unresolved:" + str(x) for x in metadata_gaps)
@@ -614,4 +624,5 @@ def extract_facts(evidence: list[dict], *, allow_unbound=False) -> dict:
                     unique[key]["sources"].append(source)
         else:
             unique[key] = fact
-    return {"facts": list(unique.values()), "candidates": candidates, "gaps": gaps}
+    return {"facts": list(unique.values()), "candidates": candidates, "gaps": gaps,
+            "advisories": list(dict.fromkeys(advisories))}

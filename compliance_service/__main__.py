@@ -13,6 +13,14 @@ def main():
     parser = argparse.ArgumentParser(description="Independent compliance service — M0/M1 fixture profile")
     parser.add_argument("--db", default=".local/service.sqlite3")
     parser.add_argument("--production-config", help="opt-in TOML for upstream/OB/callback adapters")
+    parser.add_argument("--page-receipts", dest="page_receipts", action="store_true", default=None,
+                        help="record per-page receipts (overrides config/pipeline.local.toml)")
+    parser.add_argument("--no-page-receipts", dest="page_receipts", action="store_false",
+                        help="disable per-page receipts")
+    parser.add_argument("--canonical-facts", dest="canonical_facts", action="store_true", default=None,
+                        help="merge canonical table facts into the rule snapshot")
+    parser.add_argument("--no-canonical-facts", dest="canonical_facts", action="store_false",
+                        help="disable canonical facts")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init")
     samples = sub.add_parser("make-samples", help="write reproducible full-check acceptance files")
@@ -34,6 +42,9 @@ def main():
     evaluation.add_argument("--cases", required=True)
     evaluation.add_argument("--output", default=".local/accuracy")
     args = parser.parse_args()
+    from . import pipeline_flags
+    pipeline_flags.configure(page_receipts=args.page_receipts,
+                              canonical_facts=args.canonical_facts)
     if args.command == "make-samples":
         from .samples import create_validation_samples
         print(json.dumps(create_validation_samples(args.output), ensure_ascii=False, indent=2))

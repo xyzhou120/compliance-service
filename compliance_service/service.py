@@ -119,6 +119,10 @@ class InspectionService:
     @staticmethod
     def _evaluate(run, snapshot):
         if "manifest" in run["spec"]["scope"] or "oceanbase" in run["spec"]["scope"]:
+            from . import pipeline_flags
+            if pipeline_flags.enabled("canonical_facts"):
+                from .canonical_facts import merge_into_snapshot
+                snapshot = merge_into_snapshot(snapshot)
             from .rules import evaluate_documents
             from hashlib import sha256
             from importlib.resources import files

@@ -60,6 +60,33 @@ class RecognitionRecoveryTests(unittest.TestCase):
         self.assertEqual(1, sum(url.endswith('/ocr') for url in calls))
         self.assertEqual(2, sum(url.endswith('/chat/completions') for url in calls))
 
+    def test_agreeing_model_transcription_never_makes_the_page_readable(self):
+        # 两个模型对同一张扫描页给出完全一致的文本，也不构成"原文可读"：
+        # 该页必须保持 unreadable，整个快照不得因此变成 source_complete。
+        def transport(_transport, url, *_args):
+            if url.endswith('/ocr'):
+                return {'text': 'W1 撤人'}
+            return {'choices': [{'message': {'content': '{"text":"W1 撤人"}'}}]}
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            Image.new('RGB', (16, 16), 'white').save(root / 'scan.png')
+            manifest = root / 'manifest.json'
+            manifest.write_text(json.dumps({'source_system': 'test', 'mine_code': '001', 'environment': 'test',
+                'period': {'start': '2026-10-01', 'end': '2026-10-31'}, 'source_complete': True,
+                'files': [{'file_id': 'scan', 'path': 'scan.png', 'role': 'actual_record'}]}), encoding='utf-8')
+            spec = RunSpec('test', '001', 'stop_work_unload', '2026-10',
+                           {'manifest': str(manifest)}, environment='test', callback_mode='none')
+            with patch('compliance_service.providers._transport_call', side_effect=transport):
+                source = LocalDocumentSource(root / 'cache', model_settings=settings())
+                snapshot = source({'run_id': 'r1', 'spec': spec.to_dict()})
+        unit = snapshot['coverage'][0]
+        self.assertEqual('unreadable', unit['state'])
+        self.assertEqual('compared', unit['recognition']['status'])
+        self.assertTrue(unit['model_transcription']['requires_review'])
+        self.assertFalse(snapshot['source_complete'])
+        self.assertTrue(any('unreadable' in gap for gap in snapshot['coverage_gaps']), snapshot['coverage_gaps'])
+        self.assertTrue(snapshot['evidence'], "识别的文本仍保留为可追溯证据")
+
     def test_local_source_does_not_freeze_temporary_provider_failure(self):
         calls = []
         def transport(_transport, url, *_args):

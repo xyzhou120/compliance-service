@@ -1,0 +1,7 @@
+# Copy to config/pipeline.local.toml to switch pipeline features on.
+# No environment variables are needed; CLI flags can override these values.
+[pipeline]
+# 生成页级回执：每页的类型/质量/拒因，用于溯源与拒因看板
+page_receipts = true
+# 把表格/字段事实并入规则快照（canonical -> rules 桥接）
+canonical_facts = true

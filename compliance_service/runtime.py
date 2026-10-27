@@ -57,11 +57,19 @@ def connection_factory(settings: dict, *, env: Mapping[str, str] | None = None):
     timeout = settings.get("connect_timeout_seconds", 10)
     if type(timeout) not in (int, float) or not 0 < timeout <= 60:
         raise InvalidRequest("OceanBase connect timeout must be in (0, 60]")
-    names = {key: settings.get(f"{key}_env", f"COMPLIANCE_OB_{key.upper()}")
-             for key in ("host", "port", "database", "user", "password")}
+    keys = ("host", "port", "database", "user", "password")
+    literals = {key: settings.get(key) for key in keys}
+    names = {key: settings.get(f"{key}_env", f"COMPLIANCE_OB_{key.upper()}") for key in keys}
+
+    def resolve(key):
+        """A literal value in the file wins; otherwise fall back to its env var."""
+        literal = literals.get(key)
+        if literal is not None and str(literal).strip():
+            return str(literal)
+        return _secret(environment, names[key], f"OceanBase {key}")
 
     def connect():
-        values = {key: _secret(environment, variable, f"OceanBase {key}") for key, variable in names.items()}
+        values = {key: resolve(key) for key in keys}
         try:
             port = int(values.pop("port"))
             if not 1 <= port <= 65535:

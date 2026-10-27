@@ -32,6 +32,24 @@ def _time(value):
         return None
 
 
+def _as_datetime(value, end_of_day=False):
+    """Normalize a date-only bound so it covers the whole named local day."""
+    moment = _time(value)
+    if moment is None:
+        return None
+    if isinstance(moment, datetime):
+        return moment
+    return datetime.combine(moment, datetime.max.time() if end_of_day else datetime.min.time())
+
+
+def _inside_window(value, start, end):
+    """True/False for the declared observation window; None when undecidable."""
+    moment, begin, finish = _as_datetime(value), _as_datetime(start), _as_datetime(end, end_of_day=True)
+    if moment is None or begin is None or finish is None:
+        return None
+    return begin <= moment <= finish
+
+
 def _number(value):
     try:
         result = Decimal(str(value))
@@ -250,6 +268,22 @@ class _Scope:
                 continue
             event = matching[0]
             fs = [f for f in self.facts if (f.get("event_id"), f.get("workface")) == (event_id, workface)]
+            observation = self.snapshot.get("observation") or {}
+            start, end = observation.get("start"), observation.get("end")
+            # Evidence outside the declared observation window can neither
+            # support nor refute anything: an older report re-attached to this
+            # cycle must never become a deterministic finding (INV-2).
+            outside = [f for f in fs if f.get("kind") in {"event", "action", "measurement"}
+                       and _inside_window(f.get("time"), start, end) is not True]
+            if outside:
+                self.propositions.append({
+                    "event_id": event.get("event_id"), "workface": event.get("workface"),
+                    "code": "observation_window", "state": "missing",
+                    "evidence_refs": sorted({ref for f in outside for ref in f.get("evidence_refs", [])}),
+                    "detail": "事件或执行证据不在本次观测窗口内，本轮不形成确定性结论",
+                    "law_refs": [], "rule_refs": []})
+                self.gaps.append(f"{event_id}/{workface}: {len(outside)} 条证据不在观测窗口 {start}~{end} 内，未参与判定")
+                continue
             self.check_event(event, fs)
         if not keys:
             self.gaps.append("no scoped actual event for full-rule conditions")
